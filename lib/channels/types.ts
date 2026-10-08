@@ -333,7 +333,12 @@ export interface ChannelAdapter {
   signalTyping?(input: ChannelTenantScope & {
     sessionRef: string;
     recipient: string;
+    /** ID externo da última mensagem recebida nesta conversa, quando exigido. */
+    inboundMessageId?: string;
   }): Promise<void>;
+
+  /** Presença exige uma mensagem recebida; evita consultar histórico nos demais canais. */
+  typingRequiresInboundMessage?: boolean;
 
   /**
    * Troca o texto de uma mensagem que o próprio atendente já enviou.

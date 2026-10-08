@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Presença de digitação do agente",
+    "subtitle": "Contrato genérico, referência inbound opcional e falha macia",
+    "quality_profile": "standard"
+  },
+  "lanes": [
+    { "id": "motor", "label": "Motor" },
+    { "id": "dados", "label": "Banco" },
+    { "id": "canal", "label": "Canal" }
+  ],
+  "mainPath": ["turno", "presenca", "adapter", "cliente"],
+  "nodes": [
+    {
+      "id": "turno",
+      "lane": "motor",
+      "col": 1,
+      "type": "backend",
+      "label": "inbound-turn / adapter do engine"
+    },
+    {
+      "id": "presenca",
+      "lane": "motor",
+      "col": 2,
+      "type": "backend",
+      "label": "messaging/presenca.sinalizarDigitando"
+    },
+    {
+      "id": "conversa",
+      "lane": "dados",
+      "col": 2,
+      "type": "database",
+      "label": "Conversa e sessão da organização"
+    },
+    {
+      "id": "mensagem",
+      "lane": "dados",
+      "col": 3,
+      "type": "database",
+      "label": "Última mensagem inbound da conversa"
+    },
+    {
+      "id": "adapter",
+      "lane": "canal",
+      "col": 3,
+      "type": "backend",
+      "label": "ChannelAdapter.signalTyping"
+    },
+    {
+      "id": "cliente",
+      "lane": "canal",
+      "col": 4,
+      "type": "external",
+      "label": "WhatsApp do destinatário"
+    },
+    {
+      "id": "falha",
+      "lane": "motor",
+      "col": 4,
+      "type": "backend",
+      "label": "Warn sanitizado; turno continua"
+    }
+  ],
+  "edges": [
+    { "id": "e1", "from": "turno", "to": "presenca", "label": "signalTyping" },
+    {
+      "id": "e2",
+      "from": "conversa",
+      "to": "presenca",
+      "label": "organização, sessão saudável e destinatário"
+    },
+    {
+      "id": "e3",
+      "from": "mensagem",
+      "to": "presenca",
+      "label": "external_id somente se typingRequiresInboundMessage"
+    },
+    {
+      "id": "e4",
+      "from": "presenca",
+      "to": "adapter",
+      "label": "organização, sessão, destinatário e ID opcional"
+    },
+    {
+      "id": "e5",
+      "from": "adapter",
+      "to": "cliente",
+      "label": "WAHA: setPresence; Meta: read + typing_indicator"
+    },
+    { "id": "e6", "from": "adapter", "to": "falha", "label": "recusa/timeout" },
+    { "id": "e7", "from": "falha", "to": "turno", "label": "resposta sem indicador" }
+  ]
+}

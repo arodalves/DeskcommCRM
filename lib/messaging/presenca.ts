@@ -24,8 +24,8 @@
  * erro. Nenhum deles é defeito — são o estado corriqueiro de uma instalação
  * real, e transformá-los em exceção encheria o log de ruído sobre o normal.
  *
- * O que este módulo NÃO engole é a recusa do transporte: se o canal foi
- * chamado e disse não, o erro sobe. Quem chama (`esperarComoHumano`) é que
+ * O que este módulo NÃO engole é a recusa do transporte ou a falha ao buscar
+ * a referência de mensagem exigida pelo canal. Quem chama (`esperarComoHumano`) é que
  * decide falhar macio, num ponto só e com teste próprio.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -99,9 +99,30 @@ export async function sinalizarDigitando(
   });
   if (!recipient) return;
 
+  let inboundMessageId: string | undefined;
+  if (adapter.typingRequiresInboundMessage) {
+    const { data: mensagem, error } = await supabase
+      .from("messages")
+      .select("external_id")
+      .eq("organization_id", input.organizationId)
+      .eq("conversation_id", input.conversationId)
+      .eq("direction", "inbound")
+      .not("external_id", "is", null)
+      .neq("external_id", "")
+      .order("sent_at", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error("typing_message_lookup_failed");
+    inboundMessageId = mensagem?.external_id?.trim() || undefined;
+    if (!inboundMessageId) return;
+  }
+
   await adapter.signalTyping({
     organizationId: input.organizationId,
     sessionRef: resolveSessionRef(sessao),
     recipient,
+    ...(inboundMessageId ? { inboundMessageId } : {}),
   });
 }

@@ -91,6 +91,40 @@ export function mediaPayload(env: OutboundEnvelope): Record<string, unknown> | n
 export const metaCloudAdapter: ChannelAdapter = {
   provider: "meta_cloud",
 
+  typingRequiresInboundMessage: true,
+
+  // A API associa a presença ao ID recebido e também marca a mensagem como lida.
+  // Sem referência/credencial não há chamada; recusas sobem ao fail-soft do turno.
+  async signalTyping(input): Promise<void> {
+    const messageId = input.inboundMessageId?.trim();
+    if (!messageId) return;
+    const creds = await resolveMetaCreds(createAdminClient(), {
+      organizationId: input.organizationId,
+      phoneNumberId: input.sessionRef,
+    });
+    if (!creds) return;
+
+    const res = await fetch(`${graphBaseUrl()}/${creds.phoneNumberId}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${creds.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: messageId,
+        typing_indicator: { type: "text" },
+      }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    const body = (await res.json().catch(() => ({}))) as { error?: { code?: number } };
+    if (!res.ok || body.error) {
+      // Não inclui resposta crua: pode conter dados da conversa ou credenciais.
+      throw new Error(`meta_typing_failed: ${body.error?.code ?? res.status}`);
+    }
+  },
+
   resolveRecipient(input: RecipientInput): string | null {
     // Grupos: a API de grupos da Cloud é recente e não faz parte deste seam ainda.
     // Devolver null é honesto — o chamador grava `missing_phone_number` em vez de

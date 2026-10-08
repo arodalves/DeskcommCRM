@@ -81,6 +81,111 @@ vi.mock("@/lib/supabase/admin", () => ({
 
 const a = () => getAdapter("meta_cloud");
 
+describe("adapter meta_cloud — digitando", () => {
+  const input = {
+    organizationId: "org-1",
+    sessionRef: "sessao-pn",
+    recipient: "5511999999999",
+    inboundMessageId: "wamid.recebida",
+  };
+
+  it("envia recibo de leitura e indicador com credencial da sessão", async () => {
+    configurar();
+    sessaoNoBanco.token = "token-da-sessao";
+    const http = stubFetch({ success: true });
+    expect(a().typingRequiresInboundMessage).toBe(true);
+    await a().signalTyping!(input);
+    expect(http).toHaveBeenCalledWith("https://graph.facebook.com/v19.0/sessao-pn/messages", {
+      method: "POST",
+      headers: { Authorization: "Bearer token-da-sessao", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: "wamid.recebida",
+        typing_indicator: { type: "text" },
+      }),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("mantém o fallback de credencial do ambiente", async () => {
+    configurar();
+    const http = stubFetch({ success: true });
+    await a().signalTyping!(input);
+    expect(http.mock.calls[0]![0]).toBe(
+      "https://graph.facebook.com/v19.0/1103328999528818/messages",
+    );
+    expect(http.mock.calls[0]![1].headers.Authorization).toBe("Bearer tok");
+  });
+
+  it("resolve o token com a organização do chamador", async () => {
+    sessaoNoBanco.porOrg = {
+      "org-1|sessao-pn": { cifrado: "\\xaa", token: "token-1" },
+      "org-2|sessao-pn": { cifrado: "\\xbb", token: "token-2" },
+    };
+    const http = stubFetch({ success: true });
+    await a().signalTyping!(input);
+    await a().signalTyping!({ ...input, organizationId: "org-2" });
+    expect(http.mock.calls.map((call) => call[1].headers.Authorization)).toEqual([
+      "Bearer token-1",
+      "Bearer token-2",
+    ]);
+  });
+
+  it.each([undefined, "", "  "])(
+    "sem mensagem (%j) não consulta credencial nem faz HTTP",
+    async (id) => {
+      sessaoNoBanco.erro = { code: "XX000" };
+      const http = stubFetch({});
+      await expect(a().signalTyping!({ ...input, inboundMessageId: id })).resolves.toBeUndefined();
+      expect(http).not.toHaveBeenCalled();
+    },
+  );
+
+  it("sem credencial é no-op", async () => {
+    vi.stubEnv("META_SYSTEM_USER_TOKEN", "");
+    vi.stubEnv("META_PHONE_NUMBER_ID", "");
+    const http = stubFetch({});
+    await a().signalTyping!(input);
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it("falha ao resolver a credencial não usa outra conta nem faz HTTP", async () => {
+    configurar();
+    sessaoNoBanco.erro = { code: "PGRST116" };
+    const http = stubFetch({});
+    await expect(a().signalTyping!(input)).rejects.toThrow("meta_creds_lookup_failed");
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("recusa da API sobe sem vazar o corpo (HTTP ok=%s)", async (ok) => {
+    configurar();
+    stubFetch({ error: { code: 190, message: "segredo-na-resposta" } }, ok);
+    await expect(a().signalTyping!(input)).rejects.toThrow(/^meta_typing_failed: 190$/);
+  });
+
+  it("falha HTTP sem JSON também sobe", async () => {
+    configurar();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 502,
+        json: async () => {
+          throw new Error("JSON");
+        },
+      }),
+    );
+    await expect(a().signalTyping!(input)).rejects.toThrow("meta_typing_failed: 502");
+  });
+
+  it("erro de rede sobe para o fail-soft existente do turno", async () => {
+    configurar();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("rede")));
+    await expect(a().signalTyping!(input)).rejects.toThrow("rede");
+  });
+});
+
 /**
  * A organização atravessa o seam de canal desde a issue #236: `sessionRef` é
  * identificador do PROVIDER e não identifica linha sozinho.
