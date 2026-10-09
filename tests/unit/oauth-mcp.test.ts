@@ -76,6 +76,22 @@ vi.mock("@/lib/supabase/admin", () => ({
           }),
         }),
         insert: (payload: any) => {
+          if (table === "api_tokens") {
+            for (const existing of records.values()) {
+              if (
+                existing.organization_id === payload.organization_id &&
+                existing.prefix === payload.prefix
+              ) {
+                const err = new Error(
+                  'duplicate key value violates unique constraint "api_tokens_organization_id_prefix_key"',
+                );
+                return {
+                  select: () => ({ single: async () => ({ data: null, error: err }) }),
+                  then: (resolve: any) => resolve({ data: null, error: err }),
+                };
+              }
+            }
+          }
           const id = payload.id || `id-${Math.random().toString(36).slice(2)}`;
           const row = { id, ...payload, created_at: new Date().toISOString() };
           records.set(id, row);
@@ -406,6 +422,85 @@ describe("OAuth 2.1 — Emissão de Token, Validação PKCE e Rotação de Refre
     const revokedToken = mockDatabase.api_tokens.get("api-tok-rev");
     expect(revokedToken.revoked_at).not.toBeNull();
   });
+
+  it("suporta múltiplas emissões consecutivas e reconexão na mesma organização sem violar api_tokens_organization_id_prefix_key", async () => {
+    const verifier1 = "verifier_1_abc123_dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    const challenge1 = sha256Base64Url(verifier1);
+    const code1 = "auth_code_attempt_1";
+
+    mockDatabase.oauth_authorization_codes.set(code1, {
+      id: "code-conn-1",
+      code_hash: sha256Hex(code1),
+      client_id: clientId,
+      user_id: userId,
+      organization_id: orgId,
+      redirect_uri: redirectUri,
+      code_challenge: challenge1,
+      code_challenge_method: "S256",
+      scopes: ["mcp:read"],
+      resource: "https://crm.fluxalvo.com/mcp",
+      expires_at: new Date(Date.now() + 60000).toISOString(),
+      used_at: null,
+    });
+
+    // 1ª conexão
+    const res1 = await handleTokenRequest({
+      grant_type: "authorization_code",
+      code: code1,
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      code_verifier: verifier1,
+    });
+    expect(res1.status).toBe(200);
+    const body1 = await res1.json();
+    expect(body1.access_token).toMatch(/^dsk_oat_/);
+
+    // 2ª conexão (Reconexão do ChatGPT na mesma organização)
+    const verifier2 = "verifier_2_xyz789_dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    const challenge2 = sha256Base64Url(verifier2);
+    const code2 = "auth_code_attempt_2_reconnect";
+
+    mockDatabase.oauth_authorization_codes.set(code2, {
+      id: "code-conn-2",
+      code_hash: sha256Hex(code2),
+      client_id: clientId,
+      user_id: userId,
+      organization_id: orgId,
+      redirect_uri: redirectUri,
+      code_challenge: challenge2,
+      code_challenge_method: "S256",
+      scopes: ["mcp:read"],
+      resource: "https://crm.fluxalvo.com/mcp",
+      expires_at: new Date(Date.now() + 60000).toISOString(),
+      used_at: null,
+    });
+
+    const res2 = await handleTokenRequest({
+      grant_type: "authorization_code",
+      code: code2,
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      code_verifier: verifier2,
+    });
+    expect(res2.status).toBe(200);
+    const body2 = await res2.json();
+    expect(body2.access_token).toMatch(/^dsk_oat_/);
+
+    // 3ª renovação via refresh_token da 2ª conexão
+    const res3 = await handleTokenRequest({
+      grant_type: "refresh_token",
+      refresh_token: body2.refresh_token,
+      client_id: clientId,
+    });
+    expect(res3.status).toBe(200);
+    const body3 = await res3.json();
+    expect(body3.access_token).toMatch(/^dsk_oat_/);
+
+    // Todos os tokens emitidos em api_tokens devem ter prefixos únicos
+    const prefixes = Array.from(mockDatabase.api_tokens.values()).map((t: any) => t.prefix);
+    const uniquePrefixes = new Set(prefixes);
+    expect(uniquePrefixes.size).toBe(prefixes.length);
+  });
 });
 
 describe("OAuth 2.1 — Resolução de Identidade e Permissões no Servidor MCP", () => {
@@ -691,7 +786,10 @@ describe("OAuth 2.1 — Verificações Específicas de Segurança e Conformidade
     expect(authResult.organizationId).toBe(orgId);
     // Role efetiva não pode ser maior do que a do usuário na organização (prevenção de escalonamento)
     expect(authResult.role).toBe("agent");
-    expect(authResult.actor.role).toBe("agent");
+    expect(authResult.actor.type).toBe("user");
+    if (authResult.actor.type === "user") {
+      expect(authResult.actor.role).toBe("agent");
+    }
     expect(authResult.actor.id).toBe(userId);
   });
 

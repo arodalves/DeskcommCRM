@@ -21,6 +21,19 @@ export function randomCode(byteLength = 32): string {
 }
 
 /**
+ * Gera um access token OAuth 2.1 com prefixo único por token.
+ * Evita colisão na constraint UNIQUE (organization_id, prefix) da tabela api_tokens.
+ */
+export function buildOauthAccessToken(): { token: string; prefix: string } {
+  const prefix = `dsk_oat_${randomBytes(4).toString("hex")}`;
+  const secret = randomBytes(32).toString("hex");
+  return {
+    prefix,
+    token: `${prefix}_${secret}`,
+  };
+}
+
+/**
  * Validação de PKCE S256 (RFC 7636).
  * code_challenge = BASE64URL(SHA256(code_verifier))
  */

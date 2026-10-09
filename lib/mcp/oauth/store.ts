@@ -5,7 +5,7 @@
  * em `oauth_clients`, `oauth_authorization_codes`, `oauth_refresh_tokens` e `api_tokens`.
  */
 import { createAdminClient } from "@/lib/supabase/admin";
-import { randomCode, randomToken, sha256Hex } from "./crypto";
+import { buildOauthAccessToken, randomCode, randomToken, sha256Hex } from "./crypto";
 import type {
   OauthAuthorizationCode,
   OauthClient,
@@ -242,17 +242,17 @@ export async function createTokens(params: {
     }
   }
 
-  const accessToken = randomToken("dsk_oat", 32);
+  const { token: accessToken, prefix: tokenPrefix } = buildOauthAccessToken();
   const accessTokenHash = sha256Hex(accessToken);
   const hashLiteral = `\\x${accessTokenHash}`;
   const accessExpiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
 
-  // 1. Grava o access token na tabela padrão api_tokens
+  // 1. Grava o access token na tabela padrão api_tokens com prefixo único
   const { data: apiTokenRow, error: apiTokenError } = await supabase
     .from("api_tokens")
     .insert({
       name: `OAuth: ${params.client_name || params.client_id.slice(0, 16)}`,
-      prefix: "dsk_oat",
+      prefix: tokenPrefix,
       token_hash: hashLiteral,
       scopes: tokenScopes,
       organization_id: params.organization_id,
@@ -281,6 +281,7 @@ export async function createTokens(params: {
       organization_id: params.organization_id,
       scopes: tokenScopes,
       expires_at: refreshExpiresAt,
+      revoked_at: null,
     });
 
   if (refreshError) {
@@ -317,7 +318,7 @@ export async function findAndRotateRefreshToken(
 
   if (error || !data) return null;
 
-  if (data.revoked_at !== null) return null;
+  if (data.revoked_at) return null;
   if (new Date(data.expires_at) < new Date()) return null;
   if (data.client_id !== clientId) return null;
 
@@ -338,26 +339,29 @@ export async function findAndRotateRefreshToken(
     return null;
   }
 
-  // ROTAÇÃO: revoga o refresh token anterior e seu access token vinculado
-  await supabase
-    .from("oauth_refresh_tokens")
-    .update({ revoked_at: new Date().toISOString() })
-    .eq("id", data.id);
-
-  if (data.api_token_id) {
-    await supabase
-      .from("api_tokens")
-      .update({ revoked_at: new Date().toISOString() })
-      .eq("id", data.api_token_id);
-  }
-
-  // Emite novo par
+  // 1. Emite novo par PRIMEIRO (garante que se falhar, o token atual não é invalidado)
+  const client = await findClient(data.client_id);
   const newTokens = await createTokens({
     client_id: data.client_id,
     user_id: data.user_id,
     organization_id: data.organization_id,
     scopes: data.scopes ?? ["mcp:read"],
+    client_name: client?.client_name,
   });
+
+  // 2. ROTAÇÃO: revoga o refresh token anterior e seu access token vinculado
+  const now = new Date().toISOString();
+  await supabase
+    .from("oauth_refresh_tokens")
+    .update({ revoked_at: now })
+    .eq("id", data.id);
+
+  if (data.api_token_id) {
+    await supabase
+      .from("api_tokens")
+      .update({ revoked_at: now })
+      .eq("id", data.api_token_id);
+  }
 
   return {
     ...newTokens,
