@@ -75,6 +75,15 @@ export const PUBLIC_PATHS: RegExp[] = [
   /^\/api\/internal\//,
   /^\/api\/mcp(\/.*)?$/,
   /^\/mcp(\/.*)?$/,
+  // OAuth 2.1 & Discovery para conexão MCP (ChatGPT):
+  // Metadados RFC 9728, RFC 8414, OIDC discovery, DCR, authorize, token e revoke.
+  /^\/\.well-known\/oauth-protected-resource(\/.*)?$/,
+  /^\/\.well-known\/oauth-authorization-server$/,
+  /^\/\.well-known\/openid-configuration$/,
+  /^\/oauth\/register$/,
+  /^\/oauth\/token$/,
+  /^\/oauth\/revoke$/,
+  /^\/oauth\/authorize$/,
   // GET /api/v1/contacts aceita SESSÃO ou Bearer `dsk_...` (api_tokens) — a
   // MESMA dualidade de `/api/mcp` acima. Sem esta entrada, o proxy responde
   // 401 antes de o Bearer chegar à rota, porque `getUser()` aqui só enxerga
