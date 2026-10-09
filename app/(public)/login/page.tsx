@@ -12,9 +12,10 @@ export const metadata = { title: "Entrar" };
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ next?: string; reset?: string; error?: string }>;
+  searchParams: Promise<{ next?: string; return_to?: string; reset?: string; error?: string }>;
 }) {
-  const { next, reset, error } = await searchParams;
+  const { next: rawNext, return_to, reset, error } = await searchParams;
+  const next = rawNext || return_to;
   // Fora da árvore de `app/app/layout.tsx` — sem `IdiomaProvider` do lado do
   // servidor (o cliente já tem o seu, montado em `app/(public)/layout.tsx`).
   // Quase nunca há sessão aqui (é a própria tela de entrar), mas resolve do

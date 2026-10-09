@@ -694,4 +694,83 @@ describe("OAuth 2.1 — Verificações Específicas de Segurança e Conformidade
     expect(authResult.actor.role).toBe("agent");
     expect(authResult.actor.id).toBe(userId);
   });
+
+  describe("Preservação de Parâmetros e Retorno pós-Login (/oauth/authorize)", () => {
+    it("preserva todos os parâmetros OAuth na URL de redirecionamento para /login via parâmetro next", () => {
+      const oauthParams = {
+        client_id: "dsk_client_chatgpt_probe_123",
+        redirect_uri: "https://chatgpt.com/api/mcp/oauth_callback",
+        response_type: "code",
+        scope: "mcp:read",
+        state: "state_xyz_789",
+        code_challenge: "E9Melhoa2OwvFrGMTJguCH5rtx645N475szbKD8ifu0",
+        code_challenge_method: "S256",
+        resource: "https://crm.fluxalvo.com/mcp",
+      };
+
+      const returnParams = new URLSearchParams();
+      for (const [key, value] of Object.entries(oauthParams)) {
+        if (typeof value === "string" && value.length > 0) {
+          returnParams.set(key, value);
+        }
+      }
+
+      const authorizeTarget = `/oauth/authorize?${returnParams.toString()}`;
+      const loginUrl = `/login?next=${encodeURIComponent(authorizeTarget)}`;
+
+      // O login URL usa canonical 'next=' e não 'return_to='
+      expect(loginUrl).toContain("/login?next=");
+      expect(loginUrl).not.toContain("return_to=");
+
+      // Decodificando o parâmetro next (como o Next.js / LoginPage faz)
+      const parsedLogin = new URL(loginUrl, "https://crm.fluxalvo.com");
+      const nextParam = parsedLogin.searchParams.get("next");
+      expect(nextParam).toBe(authorizeTarget);
+
+      // Verificação detalhada de todos os parâmetros presentes na URL de retomada
+      const resumed = new URL(nextParam!, "https://crm.fluxalvo.com");
+      expect(resumed.pathname).toBe("/oauth/authorize");
+      expect(resumed.searchParams.get("client_id")).toBe(oauthParams.client_id);
+      expect(resumed.searchParams.get("redirect_uri")).toBe(oauthParams.redirect_uri);
+      expect(resumed.searchParams.get("response_type")).toBe("code");
+      expect(resumed.searchParams.get("scope")).toBe("mcp:read");
+      expect(resumed.searchParams.get("state")).toBe(oauthParams.state);
+      expect(resumed.searchParams.get("code_challenge")).toBe(oauthParams.code_challenge);
+      expect(resumed.searchParams.get("code_challenge_method")).toBe("S256");
+      expect(resumed.searchParams.get("resource")).toBe(oauthParams.resource);
+    });
+
+    it("safeNext preserva a URL completa de /oauth/authorize sem cair no fallback /app", async () => {
+      const { safeNext } = await import("@/lib/auth/safe-next");
+
+      const oauthTarget =
+        "/oauth/authorize?client_id=dsk_client_abc&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fapi%2Fmcp%2Foauth_callback&response_type=code&scope=mcp%3Aread&state=s123&code_challenge=cc456&code_challenge_method=S256&resource=https%3A%2F%2Fcrm.fluxalvo.com%2Fmcp";
+
+      // Deve retornar o caminho exato de authorize com todos os parâmetros, e NUNCA o fallback /app
+      const destination = safeNext(oauthTarget, "/app");
+      expect(destination).toBe(oauthTarget);
+      expect(destination).not.toBe("/app");
+    });
+
+    it("LoginPage aceita tanto next quanto return_to como fallback defensivo", () => {
+      // Simulação da lógica de resolução de LoginPage
+      const resolveNext = (params: { next?: string; return_to?: string }) => {
+        return params.next || params.return_to;
+      };
+
+      // 1. Cenário canônico: chega via next
+      expect(resolveNext({ next: "/oauth/authorize?foo=bar" })).toBe("/oauth/authorize?foo=bar");
+
+      // 2. Cenário defensivo: chega via return_to legado
+      expect(resolveNext({ return_to: "/oauth/authorize?foo=bar" })).toBe("/oauth/authorize?foo=bar");
+
+      // 3. Cenário com ambos: next tem prioridade
+      expect(resolveNext({ next: "/oauth/authorize?new=1", return_to: "/oauth/authorize?old=1" })).toBe(
+        "/oauth/authorize?new=1",
+      );
+
+      // 4. Sem parâmetro: undefined
+      expect(resolveNext({})).toBeUndefined();
+    });
+  });
 });

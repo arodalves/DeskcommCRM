@@ -78,16 +78,14 @@ export default async function AuthorizePage({ searchParams }: AuthorizePageProps
   const authUser = await loadAuthUser();
   if (!authUser) {
     const returnParams = new URLSearchParams();
-    if (client_id) returnParams.set("client_id", client_id);
-    if (redirect_uri) returnParams.set("redirect_uri", redirect_uri);
-    if (response_type) returnParams.set("response_type", response_type);
-    if (scope) returnParams.set("scope", scope);
-    if (state) returnParams.set("state", state);
-    if (code_challenge) returnParams.set("code_challenge", code_challenge);
-    if (code_challenge_method) returnParams.set("code_challenge_method", code_challenge_method);
-    if (resource) returnParams.set("resource", resource);
+    for (const [key, value] of Object.entries(params)) {
+      if (typeof value === "string" && value.length > 0) {
+        returnParams.set(key, value);
+      }
+    }
 
-    redirect(`/login?return_to=${encodeURIComponent(`/oauth/authorize?${returnParams.toString()}`)}`);
+    const authorizeTarget = `/oauth/authorize?${returnParams.toString()}`;
+    redirect(`/login?next=${encodeURIComponent(authorizeTarget)}`);
   }
 
   if (!authUser.organizations || authUser.organizations.length === 0) {
