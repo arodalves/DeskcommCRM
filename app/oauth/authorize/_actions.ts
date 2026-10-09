@@ -11,7 +11,25 @@ import {
 export async function submitConsentAction(formData: FormData): Promise<void> {
   const authUser = await loadAuthUser();
   if (!authUser) {
-    redirect("/login");
+    const returnParams = new URLSearchParams();
+    const clientId = formData.get("client_id") as string;
+    const redirectUri = formData.get("redirect_uri") as string;
+    const state = formData.get("state") as string;
+    const codeChallenge = formData.get("code_challenge") as string;
+    const codeChallengeMethod = (formData.get("code_challenge_method") as string) || "S256";
+    const rawScope = (formData.get("scope") as string) || "mcp:read";
+    const rawResource = (formData.get("resource") as string)?.trim() || null;
+
+    if (clientId) returnParams.set("client_id", clientId);
+    if (redirectUri) returnParams.set("redirect_uri", redirectUri);
+    returnParams.set("response_type", "code");
+    if (rawScope) returnParams.set("scope", rawScope);
+    if (state) returnParams.set("state", state);
+    if (codeChallenge) returnParams.set("code_challenge", codeChallenge);
+    if (codeChallengeMethod) returnParams.set("code_challenge_method", codeChallengeMethod);
+    if (rawResource) returnParams.set("resource", rawResource);
+
+    redirect(`/login?next=${encodeURIComponent(`/oauth/authorize?${returnParams.toString()}`)}`);
   }
 
   const clientId = formData.get("client_id") as string;
