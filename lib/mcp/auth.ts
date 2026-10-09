@@ -151,7 +151,7 @@ export async function resolveApiToken(plaintext: string): Promise<ResolvedApiTok
     .from("api_tokens")
     .update({ last_used_at: new Date().toISOString() })
     .eq("id", data.id)
-    .then(({ error: updErr }) => {
+    .then(({ error: updErr }: { error: { message: string } | null }) => {
       if (updErr) console.error("[mcp.auth] last_used_at update failed", updErr.message);
     });
 
@@ -211,8 +211,34 @@ export async function validateBearerToken(
     throw err;
   }
 
-  const role = scopesRole(resolved.scopes);
-  const actor = deriveActor(resolved.scopes, resolved.id);
+  let role = scopesRole(resolved.scopes);
+  let actor = deriveActor(resolved.scopes, resolved.id);
+
+  // Tokens de acesso emitidos via OAuth 2.1 (prefixo dsk_oat_)
+  // associam-se diretamente ao usuário autenticado e herdam suas permissões reais
+  if (plaintext.startsWith("dsk_oat_")) {
+    const supabase = createAdminClient();
+    const { data: userOrg } = await supabase
+      .from("user_organizations")
+      .select("role")
+      .eq("user_id", resolved.createdBy)
+      .eq("organization_id", resolved.organizationId)
+      .maybeSingle();
+
+    if (!userOrg) {
+      throw new McpAuthError(
+        -32001,
+        401,
+        "User associated with this OAuth token is no longer a member of the organization.",
+      );
+    }
+
+    const orgRole = userOrg.role as Role;
+    if (ROLE_RANK[orgRole] < ROLE_RANK[role]) {
+      role = orgRole;
+    }
+    actor = { type: "user", id: resolved.createdBy, role };
+  }
 
   return {
     organizationId: resolved.organizationId,
@@ -236,5 +262,24 @@ export function ensureRole(actual: Role, minimum: Role): void {
 export function ensureScope(scopes: string[], required: string): void {
   if (!scopes.includes(required)) {
     throw new McpAuthError(-32002, 403, `Token missing required scope '${required}'.`);
+  }
+}
+
+/**
+ * Garante que tokens emitidos com restrição de recurso (RFC 8707 / resource:...)
+ * sejam utilizados exclusivamente no recurso para o qual foram autorizados.
+ */
+export function ensureResource(scopes: string[], currentResource: string): void {
+  const resourceScope = scopes.find((s) => s.startsWith("resource:"));
+  if (resourceScope) {
+    const boundResource = resourceScope.slice("resource:".length).replace(/\/+$/, "");
+    const normCurrent = currentResource.replace(/\/+$/, "");
+    if (boundResource !== normCurrent) {
+      throw new McpAuthError(
+        -32002,
+        403,
+        `Token not authorized for resource '${currentResource}'.`,
+      );
+    }
   }
 }

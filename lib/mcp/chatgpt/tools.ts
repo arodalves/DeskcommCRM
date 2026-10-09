@@ -70,8 +70,22 @@ export const searchLeadsTool: McpToolDefinition<typeof searchLeadsInputShape> = 
     }>();
     const contactIds: string[] = [];
 
-    for (const c of (matchedContacts ?? [])) {
-      contactMap.set(c.id, c);
+    for (const c of (matchedContacts ?? []) as Array<{
+      id: string;
+      name: string | null;
+      display_name: string | null;
+      phone_number: string | null;
+      email: string | null;
+      force_human: boolean | null;
+    }>) {
+      contactMap.set(c.id, {
+        id: c.id,
+        name: c.name,
+        display_name: c.display_name,
+        phone_number: c.phone_number,
+        email: c.email,
+        force_human: Boolean(c.force_human),
+      });
       contactIds.push(c.id);
     }
 
@@ -93,10 +107,28 @@ export const searchLeadsTool: McpToolDefinition<typeof searchLeadsInputShape> = 
 
     if (leadErr) throw new Error(`Erro na busca de leads: ${leadErr.message}`);
 
+    const leadRows = (leads ?? []) as Array<{
+      id: string;
+      title: string;
+      description: string | null;
+      pipeline_id: string;
+      stage_id: string;
+      status: string;
+      contact_id: string | null;
+      value_cents: number;
+      currency: string;
+      tags: string[] | null;
+      created_at: string;
+      owner_user_id: string | null;
+      owner_agent_id: string | null;
+      owner_kind: string | null;
+    }>;
+
     // Carrega contatos que possam estar vinculados aos leads encontrados por título
-    const missingContactIds = (leads ?? [])
+    const missingContactIds = leadRows
       .map((l) => l.contact_id)
-      .filter((cid): cid is string => Boolean(cid) && !contactMap.has(cid));
+      .filter((cid): cid is string => typeof cid === "string" && cid.length > 0)
+      .filter((cid) => !contactMap.has(cid));
 
     if (missingContactIds.length > 0) {
       const { data: moreContacts } = await ctx.supabase
@@ -105,14 +137,28 @@ export const searchLeadsTool: McpToolDefinition<typeof searchLeadsInputShape> = 
         .eq("organization_id", ctx.organizationId)
         .in("id", missingContactIds);
 
-      for (const mc of moreContacts ?? []) {
-        contactMap.set(mc.id, mc);
+      for (const mc of (moreContacts ?? []) as Array<{
+        id: string;
+        name: string | null;
+        display_name: string | null;
+        phone_number: string | null;
+        email: string | null;
+        force_human: boolean | null;
+      }>) {
+        contactMap.set(mc.id, {
+          id: mc.id,
+          name: mc.name,
+          display_name: mc.display_name,
+          phone_number: mc.phone_number,
+          email: mc.email,
+          force_human: Boolean(mc.force_human),
+        });
       }
     }
 
     // Enriquecimento com pipeline e estágio
-    const pipelineIds = [...new Set((leads ?? []).map((l) => l.pipeline_id))];
-    const stageIds = [...new Set((leads ?? []).map((l) => l.stage_id))];
+    const pipelineIds = [...new Set(leadRows.map((l) => l.pipeline_id).filter((pid): pid is string => Boolean(pid)))];
+    const stageIds = [...new Set(leadRows.map((l) => l.stage_id).filter((sid): sid is string => Boolean(sid)))];
 
     const [pipelinesRes, stagesRes] = await Promise.all([
       pipelineIds.length > 0
@@ -131,10 +177,14 @@ export const searchLeadsTool: McpToolDefinition<typeof searchLeadsInputShape> = 
         : Promise.resolve({ data: [] }),
     ]);
 
-    const pipelineMap = new Map((pipelinesRes.data ?? []).map((p) => [p.id, p.name]));
-    const stageMap = new Map((stagesRes.data ?? []).map((s) => [s.id, s.name]));
+    const pipelineMap = new Map(
+      ((pipelinesRes.data ?? []) as Array<{ id: string; name: string }>).map((p) => [p.id, p.name]),
+    );
+    const stageMap = new Map(
+      ((stagesRes.data ?? []) as Array<{ id: string; name: string }>).map((s) => [s.id, s.name]),
+    );
 
-    const enriched = (leads ?? []).map((l) => {
+    const enriched = leadRows.map((l) => {
       const c = l.contact_id ? contactMap.get(l.contact_id) : null;
       return {
         id: l.id,
@@ -788,7 +838,16 @@ export const getContactAutomationStatusTool: McpToolDefinition<
       .eq("organization_id", ctx.organizationId);
 
     const agora = new Date();
-    const convList = (conversations ?? []).map((c) => {
+    const convList = ((conversations ?? []) as Array<{
+      id: string;
+      status: string;
+      assignee_kind: string | null;
+      assigned_to_user_id: string | null;
+      bot_silenced_until: string | null;
+      last_handoff_at: string | null;
+      last_handoff_reason: string | null;
+      active_ai_agent_id: string | null;
+    }>).map((c) => {
       const sil = silencioVigente(c.bot_silenced_until, agora);
       return {
         id: c.id,
@@ -980,7 +1039,8 @@ export const listPipelineStagesTool: McpToolDefinition<typeof listPipelineStages
     const { data: pipelines, error: pipeErr } = await pipeQuery;
     if (pipeErr) throw new Error(`Erro ao listar pipelines: ${pipeErr.message}`);
 
-    const pipeIds = (pipelines ?? []).map((p) => p.id);
+    const pipeList = (pipelines ?? []) as Array<{ id: string; name: string; is_default: boolean }>;
+    const pipeIds = pipeList.map((p) => p.id);
     const { data: stages, error: stgErr } =
       pipeIds.length > 0
         ? await ctx.supabase
@@ -1002,14 +1062,22 @@ export const listPipelineStagesTool: McpToolDefinition<typeof listPipelineStages
       is_lost: boolean;
     }>>();
 
-    for (const s of stages ?? []) {
+    for (const s of (stages ?? []) as Array<{
+      id: string;
+      pipeline_id: string;
+      name: string;
+      slug: string;
+      position: number;
+      is_won: boolean;
+      is_lost: boolean;
+    }>) {
       const arr = stagesByPipe.get(s.pipeline_id) ?? [];
       arr.push(s);
       stagesByPipe.set(s.pipeline_id, arr);
     }
 
     return {
-      pipelines: (pipelines ?? []).map((p) => ({
+      pipelines: pipeList.map((p) => ({
         id: p.id,
         name: p.name,
         is_default: p.is_default,
