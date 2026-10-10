@@ -1,6 +1,5 @@
 /**
- * Endpoint MCP público para conexão com ChatGPT:
- * https://crm.fluxalvo.com/mcp
+ * Endpoint MCP público para conexão com ChatGPT (/mcp).
  *
  * Utiliza transporte Streamable HTTP (WebStandardStreamableHTTPServerTransport)
  * compatível com a especificação moderna de MCP consumida pelo ChatGPT.

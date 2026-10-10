@@ -16,7 +16,7 @@ import {
 import { canonicalPhoneBR, phoneLookupVariants } from "@/lib/channels/phone-variants";
 import { silencioVigente } from "@/lib/inbox/comando-da-conversa";
 import { emitLeadActivity } from "@/lib/leads/activity-emitter";
-import type { McpContext, McpToolDefinition } from "@/lib/mcp/types";
+import type { McpToolDefinition } from "@/lib/mcp/types";
 
 // ---------------------------------------------------------------------------
 // 1. search_leads
@@ -688,7 +688,7 @@ export const setHumanServiceTool: McpToolDefinition<typeof setHumanServiceInputS
   requiresScope: "mcp:write",
   handler: async (input, ctx) => {
     let contactId: string | null = input.contact_id ?? null;
-    let leadId: string | null = input.lead_id ?? null;
+    const leadId: string | null = input.lead_id ?? null;
 
     if (leadId && !contactId) {
       const { data: lead } = await ctx.supabase

@@ -340,6 +340,24 @@ const PROVA_PROPRIA: readonly Excecao[] = [
       "UPDATE, DELETE nem TRUNCATE para anon, authenticated ou PUBLIC. O " +
       "isolamento é medido num sentido só (org de teste → outra). Migration 0482.",
   },
+  {
+    tabela: "oauth_authorization_codes",
+    razao:
+      "tests/invariants/oauth-mcp-e-server-side.test.ts — privilégio NENHUM " +
+      "para anon, authenticated e PUBLIC, `permission denied` medido sob `set role` " +
+      "em leitura e escrita, RLS ligada, zero policies, `organization_id` e " +
+      "`user_id` NOT NULL com FK ON DELETE CASCADE, e `service_role` restrito a " +
+      "SELECT/INSERT/UPDATE/DELETE. Guarda o código PKCE S256 temporário do " +
+      "fluxo OAuth 2.1 MCP (migration 0615).",
+  },
+  {
+    tabela: "oauth_refresh_tokens",
+    razao:
+      "tests/invariants/oauth-mcp-e-server-side.test.ts — mesmo `describe.each` " +
+      "da linha acima. Guarda o hash do refresh token OAuth 2.1 MCP vinculado a " +
+      "`api_tokens`, `user_id` e `organization_id` com FK ON DELETE CASCADE, " +
+      "acessível exclusivamente pelo servidor via `service_role` (migration 0615).",
+  },
 ];
 
 /**

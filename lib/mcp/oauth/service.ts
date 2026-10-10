@@ -97,11 +97,31 @@ export async function handleClientRegistration(payload: unknown): Promise<Respon
   }
 
   for (const uri of redirectUris) {
-    if (typeof uri !== "string" || (!uri.startsWith("https://") && !uri.startsWith("http://localhost") && !uri.startsWith("http://127.0.0.1"))) {
-      return errorResponse("invalid_request", `URI inválida encontrada em redirect_uris: ${uri}`);
+    if (typeof uri !== "string") {
+      return errorResponse("invalid_request", `URI inválida encontrada em redirect_uris: ${String(uri)}`);
     }
     if (uri.includes("#")) {
       return errorResponse("invalid_request", "redirect_uri não pode conter fragmento (#).");
+    }
+    let parsedUri: URL;
+    try {
+      parsedUri = new URL(uri);
+    } catch {
+      return errorResponse("invalid_request", `URI inválida encontrada em redirect_uris: ${uri}`);
+    }
+    if (parsedUri.username !== "" || parsedUri.password !== "") {
+      return errorResponse("invalid_request", `URI inválida encontrada em redirect_uris: ${uri}`);
+    }
+    const hostname = parsedUri.hostname.toLowerCase();
+    const isLoopback =
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      hostname === "[::1]";
+    const isAllowedScheme =
+      parsedUri.protocol === "https:" || (parsedUri.protocol === "http:" && isLoopback);
+    if (!isAllowedScheme) {
+      return errorResponse("invalid_request", `URI inválida encontrada em redirect_uris: ${uri}`);
     }
   }
 

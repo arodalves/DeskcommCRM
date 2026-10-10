@@ -19,17 +19,19 @@ import {
   findClient,
   isRedirectUriAllowed,
 } from "@/lib/mcp/oauth/store";
-import { resolveOrigin } from "@/lib/mcp/oauth/origin";
+import { resolveOrigin, resolveOriginFromHeaders } from "@/lib/mcp/oauth/origin";
 import { validateBearerToken, ensureScope, ensureResource } from "@/lib/mcp/auth";
 import { chatGptTools } from "@/lib/mcp/chatgpt/tools";
 
+type MockRecord = Record<string, unknown>;
+
 // Mock do createAdminClient para simular o banco de dados sem dependência de Docker
 const mockDatabase = {
-  oauth_clients: new Map<string, any>(),
-  oauth_authorization_codes: new Map<string, any>(),
-  oauth_refresh_tokens: new Map<string, any>(),
-  api_tokens: new Map<string, any>(),
-  user_organizations: new Map<string, any>(),
+  oauth_clients: new Map<string, MockRecord>(),
+  oauth_authorization_codes: new Map<string, MockRecord>(),
+  oauth_refresh_tokens: new Map<string, MockRecord>(),
+  api_tokens: new Map<string, MockRecord>(),
+  user_organizations: new Map<string, MockRecord>(),
 };
 
 function resetMockDb() {
@@ -43,11 +45,13 @@ function resetMockDb() {
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
     from: (table: string) => {
-      const records = (mockDatabase as any)[table] ?? new Map();
+      const records =
+        (mockDatabase as Record<string, Map<string, MockRecord>>)[table] ??
+        new Map<string, MockRecord>();
       return {
-        select: (cols = "*") => ({
-          eq: (col: string, val: any) => ({
-            eq: (col2: string, val2: any) => ({
+        select: (_cols = "*") => ({
+          eq: (col: string, val: unknown) => ({
+            eq: (col2: string, val2: unknown) => ({
               maybeSingle: async () => {
                 for (const row of records.values()) {
                   if (row[col] === val && row[col2] === val2) {
@@ -75,7 +79,7 @@ vi.mock("@/lib/supabase/admin", () => ({
             },
           }),
         }),
-        insert: (payload: any) => {
+        insert: (payload: MockRecord) => {
           if (table === "api_tokens") {
             for (const existing of records.values()) {
               if (
@@ -87,24 +91,28 @@ vi.mock("@/lib/supabase/admin", () => ({
                 );
                 return {
                   select: () => ({ single: async () => ({ data: null, error: err }) }),
-                  then: (resolve: any) => resolve({ data: null, error: err }),
+                  then: (resolve: (value: { data: null; error: Error }) => unknown) =>
+                    resolve({ data: null, error: err }),
                 };
               }
             }
           }
-          const id = payload.id || `id-${Math.random().toString(36).slice(2)}`;
-          const row = { id, ...payload, created_at: new Date().toISOString() };
+          const id =
+            (typeof payload.id === "string" && payload.id) ||
+            `id-${Math.random().toString(36).slice(2)}`;
+          const row: MockRecord = { id, ...payload, created_at: new Date().toISOString() };
           records.set(id, row);
           return {
             select: () => ({
               single: async () => ({ data: row, error: null }),
             }),
-            then: (resolve: any) => resolve({ data: row, error: null }),
+            then: (resolve: (value: { data: MockRecord; error: null }) => unknown) =>
+              resolve({ data: row, error: null }),
           };
         },
-        update: (payload: any) => ({
-          eq: (col: string, val: any) => ({
-            then: (resolve: any) => {
+        update: (payload: MockRecord) => ({
+          eq: (col: string, val: unknown) => ({
+            then: (resolve: (value: { error: null }) => unknown) => {
               for (const [k, row] of records.entries()) {
                 if (row[col] === val) {
                   records.set(k, { ...row, ...payload });
@@ -141,8 +149,8 @@ describe("OAuth 2.1 — Criptografia e PKCE S256", () => {
   });
 });
 
-describe("OAuth 2.1 — Descoberta de Metadados (RFC 8414 e RFC 9728)", () => {
-  const origin = "https://crm.fluxalvo.com";
+describe("OAuth 2.1 — Descoberta de Metadados e Origem Canônica Segura (RFC 8414 e RFC 9728)", () => {
+  const origin = "https://crm.exemplo.com.br";
 
   it("retorna metadados RFC 8414 com todos os endpoints obrigatórios e suporte a S256", () => {
     const meta = getAuthorizationServerMetadata(origin);
@@ -166,14 +174,125 @@ describe("OAuth 2.1 — Descoberta de Metadados (RFC 8414 e RFC 9728)", () => {
     expect(meta.bearer_methods_supported).toEqual(["header"]);
   });
 
-  it("resolve origin canônica preservando headers de proxy reverso e recaindo sobre NEXT_PUBLIC_APP_URL", () => {
-    const req = new Request("http://internal-host/mcp", {
+  it("prioriza a origem pública canônica configurada quando não há headers ou quando o bind é interno do container", () => {
+    expect(
+      resolveOrigin(undefined, {
+        configuredOrigin: "https://crm.exemplo.com.br/",
+        nodeEnv: "production",
+      }),
+    ).toBe("https://crm.exemplo.com.br");
+
+    const internalContainerReq = new Request("http://0.0.0.0:3000/mcp", {
       headers: {
-        "x-forwarded-proto": "https",
-        "x-forwarded-host": "crm.fluxalvo.com",
+        host: "0.0.0.0:3000",
       },
     });
-    expect(resolveOrigin(req)).toBe("https://crm.fluxalvo.com");
+    expect(
+      resolveOrigin(internalContainerReq, {
+        configuredOrigin: "https://crm.exemplo.com.br",
+        nodeEnv: "production",
+      }),
+    ).toBe("https://crm.exemplo.com.br");
+  });
+
+  it("neutraliza cabeçalhos Host, X-Forwarded-Host e X-Forwarded-Proto manipulados em produção e em dev", () => {
+    const forgedForwardedHostReq = new Request("http://internal-host/mcp", {
+      headers: {
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "evil-phishing.attacker.com",
+        host: "evil-phishing.attacker.com",
+      },
+    });
+    expect(
+      resolveOrigin(forgedForwardedHostReq, {
+        configuredOrigin: "https://crm.exemplo.com.br",
+        nodeEnv: "production",
+      }),
+    ).toBe("https://crm.exemplo.com.br");
+
+    // Mesmo em ambiente local (loopback), um X-Forwarded-Host externo arbitrário é neutralizado
+    expect(
+      resolveOrigin(forgedForwardedHostReq, {
+        configuredOrigin: "http://localhost:3000",
+        nodeEnv: "development",
+      }),
+    ).toBe("http://localhost:3000");
+
+    // Tentativa de injeção de autoridade com @, path ou protocolo inválido
+    const malformedHeaders = new Headers({
+      "x-forwarded-proto": "https",
+      "x-forwarded-host": "crm.exemplo.com.br@evil.com",
+    });
+    expect(
+      resolveOriginFromHeaders(malformedHeaders, undefined, {
+        configuredOrigin: "https://crm.exemplo.com.br",
+        nodeEnv: "production",
+      }),
+    ).toBe("https://crm.exemplo.com.br");
+
+    const invalidProtoHeaders = new Headers({
+      "x-forwarded-proto": "javascript",
+      "x-forwarded-host": "crm.exemplo.com.br",
+    });
+    expect(
+      resolveOriginFromHeaders(invalidProtoHeaders, undefined, {
+        configuredOrigin: "https://crm.exemplo.com.br",
+        nodeEnv: "production",
+      }),
+    ).toBe("https://crm.exemplo.com.br");
+
+    // Tentativa de downgrade de HTTPS para HTTP via X-Forwarded-Proto
+    const downgradeHeaders = new Headers({
+      "x-forwarded-proto": "http",
+      "x-forwarded-host": "crm.exemplo.com.br",
+    });
+    expect(
+      resolveOriginFromHeaders(downgradeHeaders, "http://0.0.0.0:3000/mcp", {
+        configuredOrigin: "https://crm.exemplo.com.br",
+        nodeEnv: "production",
+      }),
+    ).toBe("https://crm.exemplo.com.br");
+  });
+
+  it("funciona atrás de proxy reverso confiável e preserva loopback em desenvolvimento local", () => {
+    const proxyReq = new Request("http://internal-host:3000/mcp", {
+      headers: {
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "crm.exemplo.com.br",
+      },
+    });
+    expect(
+      resolveOrigin(proxyReq, {
+        configuredOrigin: "https://crm.exemplo.com.br",
+        nodeEnv: "production",
+      }),
+    ).toBe("https://crm.exemplo.com.br");
+
+    // Host adicional explicitamente autorizado na política de proxy confiável
+    const trustedAliasHeaders = new Headers({
+      "x-forwarded-proto": "https",
+      "x-forwarded-host": "mcp.exemplo.com.br, proxy-interno.local",
+    });
+    expect(
+      resolveOriginFromHeaders(trustedAliasHeaders, "http://0.0.0.0:3000/mcp", {
+        configuredOrigin: "https://crm.exemplo.com.br",
+        trustedHosts: ["mcp.exemplo.com.br"],
+        nodeEnv: "production",
+      }),
+    ).toBe("https://mcp.exemplo.com.br");
+
+    // Desenvolvimento local: loopback em porta alternativa continua funcionando
+    const localDevReq = new Request("http://127.0.0.1:3001/mcp", {
+      headers: {
+        host: "127.0.0.1:3001",
+      },
+    });
+    expect(
+      resolveOrigin(localDevReq, {
+        configuredOrigin: "http://localhost:3000",
+        nodeEnv: "development",
+      }),
+    ).toBe("http://127.0.0.1:3001");
   });
 });
 
@@ -199,7 +318,7 @@ describe("OAuth 2.1 — Registro Dinâmico de Cliente (RFC 7591)", () => {
     expect(body.client_secret).toBeUndefined(); // cliente público não expõe secret
   });
 
-  it("rejeita registro com redirect_uri inválida ou contendo fragmento", async () => {
+  it("rejeita registro com redirect_uri inválida, fragmento, credenciais ou tentativa de bypass de localhost", async () => {
     const resFrag = await handleClientRegistration({
       client_name: "BadClient",
       redirect_uris: ["https://example.com/callback#fragment"],
@@ -211,6 +330,18 @@ describe("OAuth 2.1 — Registro Dinâmico de Cliente (RFC 7591)", () => {
       redirect_uris: ["http://example.com/callback"],
     });
     expect(resHttp.status).toBe(400);
+
+    const resLocalhostBypass = await handleClientRegistration({
+      client_name: "BypassClient",
+      redirect_uris: ["http://localhost.evil.com/callback"],
+    });
+    expect(resLocalhostBypass.status).toBe(400);
+
+    const resCreds = await handleClientRegistration({
+      client_name: "CredsClient",
+      redirect_uris: ["https://user:pass@example.com/callback"],
+    });
+    expect(resCreds.status).toBe(400);
   });
 });
 
@@ -219,16 +350,51 @@ describe("OAuth 2.1 — Validação de Clientes e Redirect URIs", () => {
     resetMockDb();
   });
 
-  it("reconhece clientes oficiais do ChatGPT e permite callbacks oficiais mesmo com IDs dinâmicos", async () => {
+  it("reconhece clientes oficiais do ChatGPT apenas em chatgpt.com e preserva registros existentes no banco", async () => {
     const chatGptClient = await findClient("chatgpt");
     expect(chatGptClient).not.toBeNull();
     expect(chatGptClient?.client_name).toBe("ChatGPT");
-
-    const allowed = isRedirectUriAllowed(
-      chatGptClient!,
+    expect(chatGptClient?.redirect_uris).toEqual([
       "https://chatgpt.com/api/v1/auth/mcp/callback",
-    );
-    expect(allowed).toBe(true);
+      "https://chatgpt.com/oauth/callback",
+    ]);
+
+    expect(
+      isRedirectUriAllowed(
+        chatGptClient!,
+        "https://chatgpt.com/api/v1/auth/mcp/callback",
+      ),
+    ).toBe(true);
+
+    // Domínio legado chat.openai.com não é mais aceito no fallback estático
+    expect(
+      isRedirectUriAllowed(
+        chatGptClient!,
+        "https://chat.openai.com/api/v1/auth/mcp/callback",
+      ),
+    ).toBe(false);
+    expect(await findClient("https://chat.openai.com")).toBeNull();
+
+    // Cliente previamente registrado em oauth_clients continua funcionando sem impacto
+    mockDatabase.oauth_clients.set("dsk_client_existing_1", {
+      id: "row-existing-1",
+      client_id: "dsk_client_existing_1",
+      client_secret: null,
+      client_name: "ChatGPT Registrado",
+      redirect_uris: ["https://chatgpt.com/api/v1/auth/mcp/callback"],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+      created_at: new Date().toISOString(),
+    });
+    const storedClient = await findClient("dsk_client_existing_1");
+    expect(storedClient?.id).toBe("row-existing-1");
+    expect(
+      isRedirectUriAllowed(
+        storedClient!,
+        "https://chatgpt.com/api/v1/auth/mcp/callback",
+      ),
+    ).toBe(true);
 
     const forbidden = isRedirectUriAllowed(
       chatGptClient!,
@@ -283,7 +449,7 @@ describe("OAuth 2.1 — Emissão de Token, Validação PKCE e Rotação de Refre
       code_challenge: challenge,
       code_challenge_method: "S256",
       scopes: ["mcp:read"],
-      resource: "https://crm.fluxalvo.com/mcp",
+      resource: "https://crm.exemplo.com.br/mcp",
       expires_at: new Date(Date.now() + 60000).toISOString(),
       used_at: null,
     });
@@ -306,7 +472,7 @@ describe("OAuth 2.1 — Emissão de Token, Validação PKCE e Rotação de Refre
 
     // Confirma que o authorization_code foi consumido e não pode ser reutilizado
     const codeInDb = mockDatabase.oauth_authorization_codes.get(rawCode);
-    expect(codeInDb.used_at).not.toBeNull();
+    expect(codeInDb?.used_at).not.toBeNull();
 
     // Segunda tentativa com mesmo código deve falhar
     const resReuse = await handleTokenRequest({
@@ -389,9 +555,9 @@ describe("OAuth 2.1 — Emissão de Token, Validação PKCE e Rotação de Refre
 
     // O refresh token antigo e o access token antigo devem constar como revogados
     const oldRf = mockDatabase.oauth_refresh_tokens.get("rf-1");
-    expect(oldRf.revoked_at).not.toBeNull();
+    expect(oldRf?.revoked_at).not.toBeNull();
     const oldAt = mockDatabase.api_tokens.get(oldApiTokenId);
-    expect(oldAt.revoked_at).not.toBeNull();
+    expect(oldAt?.revoked_at).not.toBeNull();
 
     // Tentar renovar novamente com o mesmo refresh token anterior deve ser rejeitado
     const resRotated = await handleTokenRequest({
@@ -420,7 +586,7 @@ describe("OAuth 2.1 — Emissão de Token, Validação PKCE e Rotação de Refre
     expect(res.status).toBe(200);
 
     const revokedToken = mockDatabase.api_tokens.get("api-tok-rev");
-    expect(revokedToken.revoked_at).not.toBeNull();
+    expect(revokedToken?.revoked_at).not.toBeNull();
   });
 
   it("suporta múltiplas emissões consecutivas e reconexão na mesma organização sem violar api_tokens_organization_id_prefix_key", async () => {
@@ -438,7 +604,7 @@ describe("OAuth 2.1 — Emissão de Token, Validação PKCE e Rotação de Refre
       code_challenge: challenge1,
       code_challenge_method: "S256",
       scopes: ["mcp:read"],
-      resource: "https://crm.fluxalvo.com/mcp",
+      resource: "https://crm.exemplo.com.br/mcp",
       expires_at: new Date(Date.now() + 60000).toISOString(),
       used_at: null,
     });
@@ -470,7 +636,7 @@ describe("OAuth 2.1 — Emissão de Token, Validação PKCE e Rotação de Refre
       code_challenge: challenge2,
       code_challenge_method: "S256",
       scopes: ["mcp:read"],
-      resource: "https://crm.fluxalvo.com/mcp",
+      resource: "https://crm.exemplo.com.br/mcp",
       expires_at: new Date(Date.now() + 60000).toISOString(),
       used_at: null,
     });
@@ -497,7 +663,7 @@ describe("OAuth 2.1 — Emissão de Token, Validação PKCE e Rotação de Refre
     expect(body3.access_token).toMatch(/^dsk_oat_/);
 
     // Todos os tokens emitidos em api_tokens devem ter prefixos únicos
-    const prefixes = Array.from(mockDatabase.api_tokens.values()).map((t: any) => t.prefix);
+    const prefixes = Array.from(mockDatabase.api_tokens!.values()).map((t: MockRecord) => t.prefix);
     const uniquePrefixes = new Set(prefixes);
     expect(uniquePrefixes.size).toBe(prefixes.length);
   });
@@ -506,7 +672,6 @@ describe("OAuth 2.1 — Emissão de Token, Validação PKCE e Rotação de Refre
 describe("OAuth 2.1 — Resolução de Identidade e Permissões no Servidor MCP", () => {
   const userId = "00000000-0000-4000-8000-000000000010";
   const orgId = "00000000-0000-4000-8000-000000000001";
-  const otherOrgId = "00000000-0000-4000-8000-000000000002";
 
   beforeEach(() => {
     resetMockDb();
@@ -565,6 +730,46 @@ describe("OAuth 2.1 — Resolução de Identidade e Permissões no Servidor MCP"
     );
   });
 
+  it("garante isolamento estrito entre organizações: vínculo em outra organização não autoriza nem escalona token de orgId", async () => {
+    const otherOrgId = "00000000-0000-4000-8000-000000000002";
+    const rawOat = "dsk_oat_cross_org_probe";
+    const hashLiteral = `\\x${sha256Hex(rawOat)}`;
+
+    mockDatabase.api_tokens.set("api-tok-cross", {
+      id: "api-tok-cross",
+      token_hash: hashLiteral,
+      organization_id: orgId,
+      created_by: userId,
+      scopes: ["mcp:read", "mcp:write", "role:admin"],
+      revoked_at: null,
+      expires_at: new Date(Date.now() + 3600000).toISOString(),
+      organizations: { status: "active" },
+    });
+
+    // Usuário é admin na otherOrgId, mas NÃO pertence a orgId
+    mockDatabase.user_organizations.set(`${userId}-${otherOrgId}`, {
+      user_id: userId,
+      organization_id: otherOrgId,
+      role: "admin",
+    });
+
+    await expect(validateBearerToken(`Bearer ${rawOat}`)).rejects.toThrow(
+      "User associated with this OAuth token is no longer a member of the organization.",
+    );
+
+    // Mesmo quando o usuário é viewer em orgId e admin em otherOrgId, o token opera estritamente em orgId como viewer
+    mockDatabase.user_organizations.set(`${userId}-${orgId}`, {
+      user_id: userId,
+      organization_id: orgId,
+      role: "viewer",
+    });
+
+    const authResult = await validateBearerToken(`Bearer ${rawOat}`);
+    expect(authResult.organizationId).toBe(orgId);
+    expect(authResult.organizationId).not.toBe(otherOrgId);
+    expect(authResult.role).toBe("viewer");
+  });
+
   it("garante isolamento de escopo: token somente leitura (mcp:read) não possui escopo mcp:write", () => {
     const scopes = ["mcp:read"];
 
@@ -592,13 +797,13 @@ describe("OAuth 2.1 — Resolução de Identidade e Permissões no Servidor MCP"
 describe("OAuth 2.1 — Verificações Específicas de Segurança e Conformidade", () => {
   const userId = "00000000-0000-4000-8000-000000000010";
   const orgId = "00000000-0000-4000-8000-000000000001";
-  const canonicalResource = "https://crm.fluxalvo.com/mcp";
+  const canonicalResource = "https://crm.exemplo.com.br/mcp";
 
   beforeEach(() => {
     resetMockDb();
   });
 
-  it("resource=https://crm.fluxalvo.com/mcp é preservado na autorização e troca de tokens", async () => {
+  it("resource=https://crm.exemplo.com.br/mcp é preservado na autorização e troca de tokens", async () => {
     const rawVerifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     const challenge = sha256Base64Url(rawVerifier);
     const clientId = "client-resource-test";
@@ -646,15 +851,15 @@ describe("OAuth 2.1 — Verificações Específicas de Segurança e Conformidade
     expect(body.access_token).toMatch(/^dsk_oat_/);
 
     // Verifica que o token gravado possui a restrição de recurso
-    let foundApiToken: any = null;
-    for (const t of mockDatabase.api_tokens.values()) {
+    let foundApiToken: MockRecord | null = null;
+    for (const t of mockDatabase.api_tokens!.values()) {
       if (t.organization_id === orgId) {
         foundApiToken = t;
         break;
       }
     }
     expect(foundApiToken).not.toBeNull();
-    expect(foundApiToken.scopes).toContain(`resource:${canonicalResource}`);
+    expect(foundApiToken?.scopes).toContain(`resource:${canonicalResource}`);
   });
 
   it("rejeita troca de token quando o resource solicitado diverge do resource autorizado (RFC 8707)", async () => {
@@ -808,7 +1013,7 @@ describe("OAuth 2.1 — Verificações Específicas de Segurança e Conformidade
         state: "state_xyz_789",
         code_challenge: "E9Melhoa2OwvFrGMTJguCH5rtx645N475szbKD8ifu0",
         code_challenge_method: "S256",
-        resource: "https://crm.fluxalvo.com/mcp",
+        resource: "https://crm.exemplo.com.br/mcp",
       };
 
       const returnParams = new URLSearchParams();
@@ -826,12 +1031,12 @@ describe("OAuth 2.1 — Verificações Específicas de Segurança e Conformidade
       expect(loginUrl).not.toContain("return_to=");
 
       // Decodificando o parâmetro next (como o Next.js / LoginPage faz)
-      const parsedLogin = new URL(loginUrl, "https://crm.fluxalvo.com");
+      const parsedLogin = new URL(loginUrl, "https://crm.exemplo.com.br");
       const nextParam = parsedLogin.searchParams.get("next");
       expect(nextParam).toBe(authorizeTarget);
 
       // Verificação detalhada de todos os parâmetros presentes na URL de retomada
-      const resumed = new URL(nextParam!, "https://crm.fluxalvo.com");
+      const resumed = new URL(nextParam!, "https://crm.exemplo.com.br");
       expect(resumed.pathname).toBe("/oauth/authorize");
       expect(resumed.searchParams.get("client_id")).toBe(oauthParams.client_id);
       expect(resumed.searchParams.get("redirect_uri")).toBe(oauthParams.redirect_uri);
@@ -847,7 +1052,7 @@ describe("OAuth 2.1 — Verificações Específicas de Segurança e Conformidade
       const { safeNext } = await import("@/lib/auth/safe-next");
 
       const oauthTarget =
-        "/oauth/authorize?client_id=dsk_client_abc&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fapi%2Fmcp%2Foauth_callback&response_type=code&scope=mcp%3Aread&state=s123&code_challenge=cc456&code_challenge_method=S256&resource=https%3A%2F%2Fcrm.fluxalvo.com%2Fmcp";
+        "/oauth/authorize?client_id=dsk_client_abc&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fapi%2Fmcp%2Foauth_callback&response_type=code&scope=mcp%3Aread&state=s123&code_challenge=cc456&code_challenge_method=S256&resource=https%3A%2F%2Fcrm.exemplo.com.br%2Fmcp";
 
       // Deve retornar o caminho exato de authorize com todos os parâmetros, e NUNCA o fallback /app
       const destination = safeNext(oauthTarget, "/app");

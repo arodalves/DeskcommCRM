@@ -9,13 +9,7 @@ import { buildOauthAccessToken, randomCode, randomToken, sha256Hex } from "./cry
 import type {
   OauthAuthorizationCode,
   OauthClient,
-  OauthRefreshToken,
 } from "./types";
-
-const TRUSTED_CHATGPT_REDIRECT_PREFIXES = [
-  "https://chatgpt.com/",
-  "https://chat.openai.com/",
-];
 
 /**
  * Busca cliente registrado por client_id.
@@ -47,8 +41,7 @@ export async function findClient(clientId: string): Promise<OauthClient | null> 
   // Fallback seguro para ChatGPT caso client_id seja a URL do ChatGPT ou "chatgpt"
   const isChatGptClient =
     clientId === "chatgpt" ||
-    clientId.startsWith("https://chatgpt.com") ||
-    clientId.startsWith("https://chat.openai.com");
+    clientId.startsWith("https://chatgpt.com");
 
   if (isChatGptClient) {
     return {
@@ -58,7 +51,6 @@ export async function findClient(clientId: string): Promise<OauthClient | null> 
       client_name: "ChatGPT",
       redirect_uris: [
         "https://chatgpt.com/api/v1/auth/mcp/callback",
-        "https://chat.openai.com/api/v1/auth/mcp/callback",
         "https://chatgpt.com/oauth/callback",
       ],
       grant_types: ["authorization_code", "refresh_token"],

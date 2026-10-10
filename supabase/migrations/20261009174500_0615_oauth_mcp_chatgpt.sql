@@ -60,9 +60,9 @@ alter table public.oauth_clients enable row level security;
 alter table public.oauth_authorization_codes enable row level security;
 alter table public.oauth_refresh_tokens enable row level security;
 
-revoke all on public.oauth_clients from public, anon, authenticated;
-revoke all on public.oauth_authorization_codes from public, anon, authenticated;
-revoke all on public.oauth_refresh_tokens from public, anon, authenticated;
+revoke all on public.oauth_clients from public, anon, authenticated, service_role;
+revoke all on public.oauth_authorization_codes from public, anon, authenticated, service_role;
+revoke all on public.oauth_refresh_tokens from public, anon, authenticated, service_role;
 
 grant select, insert, update, delete on public.oauth_clients to service_role;
 grant select, insert, update, delete on public.oauth_authorization_codes to service_role;

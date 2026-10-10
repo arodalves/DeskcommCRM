@@ -1,7 +1,12 @@
 "use server";
 
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { loadAuthUser } from "@/lib/auth/server";
+import {
+  resolveOriginFromHeaders,
+  type HeaderReader,
+} from "@/lib/mcp/oauth/origin";
 import {
   createAuthorizationCode,
   findClient,
@@ -40,10 +45,28 @@ export async function submitConsentAction(formData: FormData): Promise<void> {
   const organizationId = formData.get("organization_id") as string;
   const rawScope = (formData.get("scope") as string) || "mcp:read";
   const rawResource = (formData.get("resource") as string)?.trim() || null;
-  const canonicalResource = "https://crm.fluxalvo.com/mcp";
-  const targetResource = rawResource || canonicalResource;
+  const decision = formData.get("decision") as string;
 
-  if (rawResource && !rawResource.endsWith("/mcp")) {
+  // 1. Validação obrigatória de client_id e redirect_uri ANTES de qualquer redirect (OAuth 2.1 §4.1.2.1)
+  if (!clientId || !redirectUri) {
+    throw new Error("client_id ou redirect_uri ausente.");
+  }
+
+  const client = await findClient(clientId);
+  if (!client || !isRedirectUriAllowed(client, redirectUri)) {
+    throw new Error("Cliente ou redirect_uri não autorizado.");
+  }
+
+  let reqHeaders: HeaderReader | null = null;
+  try {
+    reqHeaders = await headers();
+  } catch {
+    reqHeaders = null;
+  }
+  const canonicalResource = `${resolveOriginFromHeaders(reqHeaders)}/mcp`;
+  const normalizedRawResource = rawResource ? rawResource.replace(/\/+$/, "") : null;
+
+  if (normalizedRawResource && normalizedRawResource !== canonicalResource) {
     const errorUrl = new URL(redirectUri);
     errorUrl.searchParams.set("error", "invalid_target");
     errorUrl.searchParams.set("error_description", "Recurso não suportado por este servidor MCP.");
@@ -51,11 +74,7 @@ export async function submitConsentAction(formData: FormData): Promise<void> {
     redirect(errorUrl.toString());
   }
 
-  const decision = formData.get("decision") as string;
-
-  if (!redirectUri) {
-    throw new Error("redirect_uri ausente.");
-  }
+  const targetResource = canonicalResource;
 
   // Se o usuário recusou a autorização
   if (decision !== "allow") {
@@ -66,19 +85,10 @@ export async function submitConsentAction(formData: FormData): Promise<void> {
     redirect(errorUrl.toString());
   }
 
-  if (!clientId || !codeChallenge) {
+  if (!codeChallenge || codeChallengeMethod !== "S256") {
     const errorUrl = new URL(redirectUri);
     errorUrl.searchParams.set("error", "invalid_request");
-    errorUrl.searchParams.set("error_description", "client_id ou code_challenge ausente.");
-    if (state) errorUrl.searchParams.set("state", state);
-    redirect(errorUrl.toString());
-  }
-
-  const client = await findClient(clientId);
-  if (!client || !isRedirectUriAllowed(client, redirectUri)) {
-    const errorUrl = new URL(redirectUri);
-    errorUrl.searchParams.set("error", "invalid_client");
-    errorUrl.searchParams.set("error_description", "Cliente ou redirect_uri não autorizado.");
+    errorUrl.searchParams.set("error_description", "PKCE S256 (code_challenge) é obrigatório.");
     if (state) errorUrl.searchParams.set("state", state);
     redirect(errorUrl.toString());
   }

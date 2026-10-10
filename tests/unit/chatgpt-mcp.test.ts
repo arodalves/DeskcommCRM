@@ -9,15 +9,12 @@ import {
   getContactAutomationStatusTool,
   getLeadTool,
   listPipelineStagesTool,
-  moveLeadStageTool,
   searchLeadsTool,
   setHumanServiceTool,
-  updateLeadTool,
 } from "@/lib/mcp/chatgpt/tools";
 import type { McpContext } from "@/lib/mcp/types";
 
 const ORG_ID = "00000000-0000-4000-8000-000000000001";
-const OTHER_ORG = "00000000-0000-4000-8000-000000000002";
 const USER_ID = "00000000-0000-4000-8000-000000000003";
 const AGENT_ID = "00000000-0000-4000-8000-000000000004";
 const LEAD_ID = "00000000-0000-4000-8000-000000000005";
