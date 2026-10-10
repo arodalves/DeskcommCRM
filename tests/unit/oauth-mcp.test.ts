@@ -524,6 +524,7 @@ describe("OAuth 2.1 — Resolução de Identidade e Permissões no Servidor MCP"
       scopes: ["mcp:read"],
       revoked_at: null,
       expires_at: new Date(Date.now() + 3600000).toISOString(),
+      organizations: { status: "active" },
     });
 
     mockDatabase.user_organizations.set(`${userId}-${orgId}`, {
@@ -555,10 +556,13 @@ describe("OAuth 2.1 — Resolução de Identidade e Permissões no Servidor MCP"
       scopes: ["mcp:read"],
       revoked_at: null,
       expires_at: new Date(Date.now() + 3600000).toISOString(),
+      organizations: { status: "active" },
     });
 
     // Usuário NÃO está em user_organizations para esta organização
-    await expect(validateBearerToken(`Bearer ${rawOat}`)).rejects.toThrow();
+    await expect(validateBearerToken(`Bearer ${rawOat}`)).rejects.toThrow(
+      "User associated with this OAuth token is no longer a member of the organization.",
+    );
   });
 
   it("garante isolamento de escopo: token somente leitura (mcp:read) não possui escopo mcp:write", () => {
@@ -773,6 +777,7 @@ describe("OAuth 2.1 — Verificações Específicas de Segurança e Conformidade
       scopes: ["mcp:read", "role:admin"], // token solicita admin
       revoked_at: null,
       expires_at: new Date(Date.now() + 3600000).toISOString(),
+      organizations: { status: "active" },
     });
 
     // Mas no banco o usuário tem apenas a role 'agent' nesta organização
