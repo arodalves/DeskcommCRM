@@ -1,3 +1,4 @@
+-- manifest: Servidor de Autorização OAuth 2.1 para integração MCP com ChatGPT (RFC 8414, RFC 7591, RFC 9728, PKCE S256).
 -- 20261009174500_0615_oauth_mcp_chatgpt.sql
 -- Servidor de Autorização OAuth 2.1 para integração MCP com ChatGPT.
 -- Implementa RFC 8414 (Metadata), RFC 7591 (DCR), RFC 9728 (Protected Resource) e PKCE S256.

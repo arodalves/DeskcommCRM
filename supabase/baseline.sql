@@ -4791,7 +4791,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 
 
 
--- =====================================================================-- COMPLEMENTO DO BASELINE (não capturado pelo dump --schema public):
+-- ============================================================================
+-- COMPLEMENTO DO BASELINE (não capturado pelo dump --schema public):
 --   storage buckets + policies (migrations 0014/0017) e realtime publication.
 --   Aplicar DEPOIS do schema public (dependem de public.user_organizations).
 -- ============================================================================
@@ -48212,7 +48213,6 @@ alter table public.ai_agent_versions
   add constraint ai_agent_versions_inbound_debounce_ms_check
   check (inbound_debounce_ms is null or (inbound_debounce_ms >= 0 and inbound_debounce_ms <= 60000));
 
-<<<<<<< ours
 -- ---- a chave de mapas da organização (migration 0504) ----
 -- Pino do WhatsApp → rua/cidade/região aproximados (lib/mapas/). Server-side only.
 create table if not exists public.map_provider_credentials (
@@ -48754,7 +48754,7 @@ on conflict (model) do update set
   completion_cents_per_million_tokens = excluded.completion_cents_per_million_tokens,
   notes = excluded.notes,
   superseded_at = null;
-=======
+
 -- ---- oauth 2.1 mcp chatgpt (migration 0615) ----
 create table if not exists public.oauth_clients (
   id uuid primary key default gen_random_uuid(),
@@ -48816,4 +48816,3 @@ revoke all on public.oauth_refresh_tokens from public, anon, authenticated;
 grant select, insert, update, delete on public.oauth_clients to service_role;
 grant select, insert, update, delete on public.oauth_authorization_codes to service_role;
 grant select, insert, update, delete on public.oauth_refresh_tokens to service_role;
->>>>>>> theirs
