@@ -110,18 +110,25 @@ vi.mock("@/lib/supabase/admin", () => ({
               resolve({ data: row, error: null }),
           };
         },
-        update: (payload: MockRecord) => ({
-          eq: (col: string, val: unknown) => ({
+        update: (payload: MockRecord) => {
+          const conditions: Array<[string, unknown]> = [];
+          const query = {
+            eq: (col: string, val: unknown) => {
+              conditions.push([col, val]);
+              return query;
+            },
             then: (resolve: (value: { error: null }) => unknown) => {
               for (const [k, row] of records.entries()) {
-                if (row[col] === val) {
+                const matches = conditions.every(([c, v]) => row[c] === v);
+                if (matches) {
                   records.set(k, { ...row, ...payload });
                 }
               }
               return resolve({ error: null });
             },
-          }),
-        }),
+          };
+          return query;
+        },
       };
     },
   }),
