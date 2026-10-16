@@ -56887,6 +56887,7 @@ on conflict (model) do update set
   prompt_cents_per_million_tokens = excluded.prompt_cents_per_million_tokens,
   completion_cents_per_million_tokens = excluded.completion_cents_per_million_tokens,
   notes = excluded.notes,
+  superseded_at = null;
 
 -- ---- oauth 2.1 mcp chatgpt (migration 0615) ----
 create table if not exists public.oauth_clients (
