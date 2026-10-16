@@ -72,7 +72,11 @@ if [ "${SINGLE_SERVER:-0}" = "1" ]; then
   if sincronizar_smtp_do_gotrue; then
     dc_supabase up -d --no-deps auth >/dev/null 2>&1 || c_ylw "⚠ Não consegui reiniciar o auth do Supabase com o SMTP do CRM."
   else
-    c_ylw "⚠ Sem SMTP no CRM: 'esqueci a senha' e a confirmação de cadastro não enviam e-mail. Configure em /admin/email e rode o update.sh de novo."
+    # #2755 — o aviso diz POR QUE rodar de novo: o app não leva o SMTP de
+    # /admin/email ao GoTrue, quem leva é a chamada logo acima. Sem o porquê,
+    # "rode de novo" parecia ordem sem motivo. Não citamos o painel de
+    # Atualização: o botão dele só aparece quando há versão nova.
+    c_ylw "⚠ Sem SMTP no CRM: 'esqueci a senha' e a confirmação de cadastro não enviam e-mail. Configure em /admin/email e rode bash hostgator-setup-kit/update.sh de novo (ele roda mesmo sem versão nova) — é ele que leva o SMTP ao serviço de login."
   fi
 fi
 
@@ -175,6 +179,19 @@ if [ -z "$FORCE" ] && [ -z "$MESMA_TAG" ]; then
      servidor. Para instalar assim mesmo, por sua conta:
        bash hostgator-setup-kit/update.sh --to $TARGET_TAG --force" ;;
   esac
+fi
+
+# Aqui já sabemos que há atualização real ou --force. Em ARM64, a release
+# inteira (quatro imagens + WAHA efetiva) é conferida no índice OCI antes de
+# backup, checkout, banco ou contêiner: recusar aqui não deixa nada pela metade.
+# Em AMD64 não há este pré-voo: toda imagem publicada tem amd64, e o preflight
+# geral abaixo (#1955) já confere as quatro imagens em toda arquitetura.
+# Com DESKCOMM_BUILD_LOCAL o escape da #1955 vale aqui também: quem pediu
+# construção local não depende do registro, e recusá-la aqui a anularia
+# justamente com o registro fora.
+PLATAFORMA_HOST="$(plataforma_oci_do_host "$(uname -m 2>/dev/null || true)" 2>/dev/null || true)"
+if [ "$PLATAFORMA_HOST" = linux/arm64 ] && ! build_local_pedido && ! preflight_plataforma_atualizacao "$TARGET_TAG" "$PLATAFORMA_HOST"; then
+  refuse "A versão $TARGET_TAG não está completa para $PLATAFORMA_HOST ou a WAHA configurada é incompatível. Não alterei banco, imagens nem código. Confira o registry e repita."
 fi
 if [ -n "$MESMA_TAG" ] && [ -n "$FORCE" ]; then
   # Com --force na mesma tag ninguém conferiu a imagem: quem chega aqui pediu
@@ -675,25 +692,39 @@ gravar_imagens .env "$VERSAO_ALVO"
 VOZ_CRIADA="$(completar_segredos_da_voz .env)" || VOZ_CRIADA=""
 [ -n "$VOZ_CRIADA" ] && c_ylw "  (preparei as credenciais da chamada de voz no .env — ela segue DESLIGADA)"
 
-# `dc pull` falha se alguma das três imagens ainda não existir no registro — o
+# `dc pull` falha se alguma das três imagens ainda não existir no registro
+# (quatro com o profile `telefonia`, que liga o voice-agent) — o
 # que acontece numa instalação atualizando para a primeira versão publicada
-# depois desta mudança, ou se um run de publicação quebrou. Nesse caso o compose
-# ainda tem `build:` ao lado do `image:` do worker e do scheduler, então o
-# `up -d` os constrói localmente: pior que puxar, melhor que não atualizar.
+# depois desta mudança, ou se um run de publicação quebrou. Worker, scheduler e
+# voz têm `build:` ao lado do `image:`, e o Compose os constrói sozinho em
+# QUALQUER falha de pull (medido — não só na de arquitetura): pior que puxar,
+# melhor que não atualizar. O `app` fica SEM `build:` de propósito (#1060): se a
+# imagem dele não veio, o `up -d` logo abaixo FALHA e quem decide é o portão
+# `build_local_permitido` — construir aqui ou recusar, conforme o registro
+# responde ou não.
 if ! dc pull; then
-  # A mensagem distingue os dois casos porque a consequência é oposta, e uma
-  # frase tranquilizadora sobre o caso errado é o pior desfecho possível: o
-  # `worker` e o `scheduler` têm `build:` ao lado do `image:` e o `up -d` os
-  # constrói; o `app` NÃO tem, então se for a imagem dele que falta, o `up -d`
-  # falha logo abaixo e a guarda dele constrói a versão aqui — e dizer "sigo
-  # assim mesmo" teria sido mentira.
+  # A mensagem distingue os dois casos porque a CAUSA é diferente, e uma frase
+  # tranquilizadora sobre o caso errado é o pior desfecho possível. Se a do app
+  # veio, o que faltar em worker, scheduler ou voz o Compose constrói sozinho no
+  # `up -d` (medido: qualquer falha de pull, não só a de arquitetura). Se a do
+  # app NÃO veio, ele não tem `build:` no compose de produção de propósito: o
+  # `up -d` falha e quem decide é o portão `build_local_permitido` — com o
+  # registro respondendo ele constrói a versão aqui; sem resposta do registro ele
+  # RECUSA, de propósito (guarda da #1955). "Construído aqui" sem essa ressalva
+  # prometeria justamente o que o portão nega no pior caso. Os dois diagnósticos
+  # também contam coisas distintas: "o app veio e falta outra peça" × "o app não
+  # veio", que aponta para a versão ainda não publicada (ou o pacote privado).
   if dc pull app >/dev/null 2>&1; then
     c_ylw "⚠ Não consegui puxar todas as imagens da versão ${VERSAO_ALVO}."
     c_ylw "  A do app veio; o que faltar é construído aqui (mais lento, mesmo resultado)."
   else
     c_ylw "⚠ Não consegui puxar a imagem do APP na versão ${VERSAO_ALVO}."
     c_ylw "  Causas comuns: a versão ainda está publicando, ou o pacote está privado no GHCR."
-    c_ylw "  Vou tentar subir mesmo assim — se falhar, rode de novo em alguns minutos."
+    c_ylw "  Vou tentar subir mesmo assim — se o up -d falhar, quem decide o passo"
+    c_ylw "  seguinte é a recuperação: com o registro respondendo ela constrói as"
+    c_ylw "  imagens desta versão aqui (15 a 25 min); sem resposta do registro ela"
+    c_ylw "  recusa, de propósito, para não gastar a memória desta VPS."
+    c_ylw "  Se não subir, rode de novo em alguns minutos."
   fi
 fi
 # A rede do proxy externo é declarada como EXTERNA no compose: se ela sumiu
@@ -704,11 +735,14 @@ fi
 garantir_rede_do_proxy
 # O `up -d` falha por imagem ausente no disco e, com ele, a atualização inteira:
 # numa VPS de arquitetura diferente da das imagens publicadas o `pull` acima não
-# traz nada, e o `app` — ao contrário do worker e do scheduler — não tem `build:`
-# ao lado do `image:`, então o Compose não tem como construí-lo. Sem esta guarda
-# o script terminava como se tivesse dado certo e o dono ficava na versão velha
-# sem saber; pelo botão "Atualizar" do site, pior: o agente roda sozinho no cron
-# e não há ninguém lendo a tela para desconfiar.
+# traz nada. Worker, scheduler e voz têm `build:` ao lado do `image:` e o
+# Compose os constrói sozinho em QUALQUER falha de pull (medido — tag
+# inexistente, registro fora por DNS, "no matching manifest"); o `app` NÃO tem,
+# de propósito (#1060) — é a falta da imagem dele que faz o `up -d` falhar e
+# entrega a decisão a esta guarda, única que julga quando o registro não
+# responde. Sem ela o script terminava como se tivesse dado certo e o dono
+# ficava na versão velha sem saber; pelo botão "Atualizar" do site, pior: o
+# agente roda sozinho no cron e não há ninguém lendo a tela para desconfiar.
 #
 # O gatilho é o CÓDIGO DE SAÍDA, nunca o texto do erro — arquitetura da VPS, tag
 # ainda publicando, pacote privado no registro e registro fora do ar caem no
@@ -777,7 +811,7 @@ fi
 # proxy" em TODA atualização de quem usa proxy externo: alarme falso, num
 # momento em que o dono precisa confiar no que está lendo.
 case "${REVERSE_PROXY:-caddy}" in
-traefik|npm)
+traefik|npm|cloudflared)
   c_grn "✓ proxy externo (${REVERSE_PROXY}): o Caddy não é usado aqui — nada a recarregar"
   ;;
 *)
@@ -833,26 +867,9 @@ if [ -n "$ok" ]; then
   fi
   # Dito aqui pelo mesmo motivo do pin: é no fim que o dono lê.
   if [ -n "$AVISO_SITE_URL" ]; then
-    DOM_AVISO="$(printf '%s' "${NEXT_PUBLIC_APP_URL:-https://SEU_DOMINIO}")"
-    cat <<AVISO
-
-$(c_ylw "  ─── CONFIRA UMA COISA, UMA VEZ SÓ ─────────────────────")
-
-  Os e-mails de acesso (esqueci minha senha, confirmação de cadastro,
-  aceite de convite) levam para o endereço que estiver em Authentication
-  → URL Configuration, no painel do Supabase. Instalações feitas antes de
-  o instalador perguntar o token do Supabase ficaram com o padrão de
-  projeto novo, \`http://localhost:3000\`, que só existe na máquina de
-  quem desenvolve — e aí ninguém consegue redefinir a própria senha.
-
-  Vale conferir. Se já estiver com os valores abaixo, não há nada a fazer:
-
-       Site URL:       ${DOM_AVISO}
-       Redirect URLs:  ${DOM_AVISO%/}/auth/confirm
-
-  Este aviso não se repete — para o instalador cuidar disso sozinho, rode
-  o update com \`export SUPABASE_ACCESS_TOKEN=sbp_...\` no ambiente.
-AVISO
+    # O texto depende da topologia (single-server não tem o que conferir):
+    # ver aviso_do_site_url, em _common.sh.
+    aviso_do_site_url "${NEXT_PUBLIC_APP_URL:-https://SEU_DOMINIO}"
     : > "$MARCA_AVISO_SITE_URL" 2>/dev/null || true
   fi
 else

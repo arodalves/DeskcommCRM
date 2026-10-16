@@ -209,6 +209,12 @@ type EntradaDeMarca = {
 
 const MARCA_CONGELADA: Record<string, EntradaDeMarca> = {
   // ─── PROTOCOLO — contrato de fio. Renomear quebra integração alheia. ───
+  "lib/ai/pontos/pkce-da-assinatura.ts": {
+    categoria: "PROTOCOLO",
+    motivo:
+      "`agent_name_hint` identifica o aplicativo auto-hospedado durante a autorização SIWC da OpenAI; não é o nome apresentado nas telas do CRM. O fluxo de login depende deste identificador de produto.",
+    marcas: ["deskcommcrm"],
+  },
   "lib/webhooks/assinatura.ts": {
     categoria: "PROTOCOLO",
     motivo:
@@ -236,8 +242,22 @@ const MARCA_CONGELADA: Record<string, EntradaDeMarca> = {
   "lib/mcp/servidor-externo/chamada.ts": {
     categoria: "PROTOCOLO",
     motivo:
-      "clientInfo do handshake `initialize` do MCP que este cliente manda ao servidor REMOTO: ele registra quem conectou e é comum haver regra de acesso por identificação do cliente lá do lado. Não é texto de interface — a tela nunca mostra — e renomear muda a identidade reportada no fio do protocolo",
-    marcas: ["deskcomm-crm"],
+      "clientInfo do handshake `initialize` do MCP que este cliente manda ao servidor REMOTO: ele registra quem conectou e é comum haver regra de acesso por identificação do cliente lá do lado. Não é texto de interface — a tela nunca mostra — e renomear muda a identidade reportada no fio do protocolo. E os cabeçalhos `X-Deskcomm-Contato-*`/`X-Deskcomm-Canal` (#2147): o servidor externo FILTRA os dados do cliente da conversa por esses nomes exatos; renomear faz o servidor deixar de achar a identidade e, conforme a implementação dele, responder sem filtro",
+    marcas: ["deskcomm-crm", "x-deskcomm-canal", "x-deskcomm-contato-id", "x-deskcomm-contato-telefone"],
+  },
+  "lib/mcp/servidor-externo/externo.test.ts": {
+    categoria: "PROTOCOLO",
+    motivo:
+      "é a guarda do contrato acima (#2147): o teste de não-forjamento tenta passar os nomes `X-Deskcomm-*` por argumento de ferramenta, em caixas diferentes, e confere o que chega no fio. Trocar a string aqui desarmaria a prova de que o argumento não alcança o cabeçalho",
+    marcas: [
+      "x-deskcomm-canal",
+      "x-deskcomm-contato-id",
+      "x-deskcomm-contato-id",
+      "x-deskcomm-contato-telefone",
+      "x-deskcomm-contato-telefone",
+      "x-deskcomm-extra",
+      "x-deskcomm-extra",
+    ],
   },
   "lib/supabase/admin.ts": {
     categoria: "PROTOCOLO",
@@ -821,9 +841,19 @@ type CategoriaDeHost =
 type EntradaDeHost = { categoria: CategoriaDeHost; motivo: string };
 
 const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
+  "chatgpt.com": {
+    categoria: "CONSOLE",
+    motivo:
+      "é o serviço da conta ChatGPT que o operador abre para conectar a assinatura. O produto não faz requests para este host; a consulta do catálogo e a inferência SIWC usam a API pública oficial em api.openai.com.",
+  },
   "datamanager.googleapis.com": {
     categoria: "FORNECEDOR",
     motivo: "endpoint oficial da Google Data Manager API: recebe conversões e consulta o processamento na conta autorizada pela própria organização. O destino pertence ao fornecedor e não à instalação do CRM.",
+  },
+  "meet.googleapis.com": {
+    categoria: "FORNECEDOR",
+    motivo:
+      "endpoint oficial da Google Meet REST API (`POST /v2/spaces`, em `lib/agenda/google/transport.ts`): é o DESTINO do request que cria a sala de reunião com acesso aberto (#2063), com o token da própria organização. Diferente de `meet.google.com` — que é o LINK de convite, e por isso entra como PLATAFORMA em CONFERÊNCIA —, este é host que o produto BUSCA: trocar pelo domínio do revendedor faria a chamada não chegar a lugar nenhum, e a sala nunca seria criada.",
   },
   // ── localização compartilhada: o link que abre o pino do cliente ──
   "maps.google.com": {
@@ -859,17 +889,12 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
   "api.openai.com": {
     categoria: "FORNECEDOR",
     motivo:
-      "endpoint da API da OpenAI (embeddings da busca e transcrição de áudio). É o destino do request: trocar pelo domínio do revendedor faria a chamada não chegar a lugar nenhum.",
+      "endpoint da API pública da OpenAI para embeddings, transcrição e os fluxos Sign in with ChatGPT (catálogo de modelos e inferência). É o destino dos requests: trocar pelo domínio do revendedor faria as chamadas não chegarem a lugar nenhum.",
   },
   "auth.openai.com": {
     categoria: "FORNECEDOR",
     motivo:
       "endpoint de autorização OAuth da OpenAI usado pelo login por PKCE da assinatura (`lib/ai/pontos/pkce-da-assinatura.ts`): é onde o fluxo troca o code pelo token e renova o acesso. É o destino do request, iniciado pelo próprio usuário na tela de Sistema — trocar pelo domínio do revendedor faria o login não chegar a lugar nenhum.",
-  },
-  "chatgpt.com": {
-    categoria: "FORNECEDOR",
-    motivo:
-      "backend do Codex (`OPENAI_CODEX_ENDPOINT` em `lib/agent-engine/edge/llm/providers.ts`): é para lá que a chamada da ASSINATURA do ChatGPT vai, com o access_token do login por PKCE, e o mesmo host é o painel que a lista de Credenciais aponta em `ondePegarAChave` (`lib/ai/pontos/provedores.ts`). Não é contrato público da OpenAI e a Openai pode mudá-lo sem aviso — é por isto que a queda para a chave da organização existe: muda o destino, não a conversa.",
   },
   "api.typesafe.ai": {
     categoria: "FORNECEDOR",
@@ -929,6 +954,21 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
   "api.tiendanube.com": {
     categoria: "FORNECEDOR",
     motivo: "endpoint da API da Nuvemshop/Tiendanube (ordens e catálogo do e-commerce do cliente).",
+  },
+  "api.stripe.com": {
+    categoria: "FORNECEDOR",
+    motivo:
+      "endpoint da API da Stripe (`lib/cobranca/provedores/stripe.ts`): é por onde o DONO da instalação cobra as empresas dele, com a chave da conta Stripe DELE. É o destino do request; trocar pelo domínio do revendedor faria a cobrança não chegar a lugar nenhum.",
+  },
+  "api.asaas.com": {
+    categoria: "FORNECEDOR",
+    motivo:
+      "endpoint de PRODUÇÃO da API do Asaas (`lib/cobranca/provedores/asaas.ts`): Pix e boleto recorrentes com que o DONO da instalação cobra as empresas dele, com a chave da conta Asaas DELE. Destino do request, não marca.",
+  },
+  "api-sandbox.asaas.com": {
+    categoria: "FORNECEDOR",
+    motivo:
+      "endpoint do SANDBOX do Asaas (`lib/cobranca/provedores/asaas.ts`): a chave `$aact_hmlg_` do dono só funciona aqui, e é com ela que ele testa antes de publicar.",
   },
   "www.tiendanube.com": {
     categoria: "FORNECEDOR",
@@ -1181,6 +1221,9 @@ describe("catraca de host de terceiro no código que embarca", () => {
       // Decisão escrita: painel de chaves da Requesty, o mesmo caso dos outros
       // CONSOLE (o link "Onde pegar a chave" da tela de Credenciais).
       "app.requesty.ai",
+      // A pessoa abre o produto ChatGPT para autenticar a conta; o CRM chama
+      // apenas `api.openai.com` no fluxo SIWC.
+      "chatgpt.com",
       "console.anthropic.com",
       // Decisão escrita: é o painel de chaves do Jev, o mesmo caso dos outros
       // CONSOLE — o link "Onde pegar a chave" da tela de Credenciais.

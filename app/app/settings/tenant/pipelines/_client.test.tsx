@@ -351,7 +351,7 @@ describe("comanda do ganho (#1477)", () => {
   const ROTULO = "Abrir comanda ao ganhar um negócio neste funil";
 
   it("nasce desligada e ligar grava `comanda_no_ganho: true` na porta única de escrita", () => {
-    render(<PipelinesClient pipelines={[FUNIL]} etapas={{}} podeEditarConfig />);
+    render(<PipelinesClient pipelines={[FUNIL]} etapas={{}} podeEditarConfig comandaDisponivel />);
     const caixa = screen.getByLabelText(ROTULO);
     expect(caixa).not.toBeChecked();
 
@@ -363,7 +363,7 @@ describe("comanda do ganho (#1477)", () => {
 
   it("funil já ligado abre marcado, e desligar grava `false`", () => {
     const ligado: PipelineRow = { ...FUNIL, settings: { ...FUNIL.settings, comanda_no_ganho: true } };
-    render(<PipelinesClient pipelines={[ligado]} etapas={{}} podeEditarConfig />);
+    render(<PipelinesClient pipelines={[ligado]} etapas={{}} podeEditarConfig comandaDisponivel />);
     const caixa = screen.getByLabelText(ROTULO);
     expect(caixa).toBeChecked();
 
@@ -371,5 +371,29 @@ describe("comanda do ganho (#1477)", () => {
     salvar();
 
     expect(vi.mocked(updatePipelineConfig).mock.calls.at(-1)![1].comanda_no_ganho).toBe(false);
+  });
+
+  it("sem o módulo financeiro (#1907) o interruptor some, e salvar não mexe no valor gravado", () => {
+    const ligado: PipelineRow = { ...FUNIL, settings: { ...FUNIL.settings, comanda_no_ganho: true } };
+    render(<PipelinesClient pipelines={[ligado]} etapas={{}} podeEditarConfig />);
+    expect(screen.queryByLabelText(ROTULO)).toBeNull();
+
+    salvar();
+
+    expect(vi.mocked(updatePipelineConfig).mock.calls.at(-1)![1].comanda_no_ganho).toBe(true);
+  });
+});
+
+describe("escreveMostrarQuando — o item 'ainda não escolhi' não vira valor", () => {
+  it("escolher o item vazio do seletor de valor deixa a condição meio montada, e ela não grava", async () => {
+    const { escreveMostrarQuando, normalizaMostrarQuando, SEM_VALOR_DA_CONDICAO } = await import(
+      "./_client"
+    );
+    const meio = escreveMostrarQuando(
+      { campo: "tipo", operador: "igual", valor: "Outro" },
+      { valor: SEM_VALOR_DA_CONDICAO },
+    );
+    expect(meio).toEqual({ campo: "tipo", operador: "igual" });
+    expect(normalizaMostrarQuando(meio)).toBeUndefined();
   });
 });

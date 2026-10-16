@@ -81,6 +81,23 @@ Se a terceira frase é verdadeira, o fragmento é `exige_acao` **mesmo que a mud
 pequena** — o custo que ele mede é o do operador, não o do autor. O número continua minor;
 major só quando o dono pede.
 
+### Valor novo num campo de SAÍDA não é "mudar de forma"
+
+Decidido pelo dono do produto em 07/10, no PR #2114 (`crm_list_followups` ganhou o valor
+`nao_disparado` em `situacao`):
+
+- **Acrescentar** um valor a um conjunto fechado que o sistema **devolve** (enum de saída da
+  API, de ferramenta do MCP, de payload de webhook) é **`capacidade_nova`** — desde que o
+  fragmento avise, com o nome do campo e do valor, quem integra ("se a sua integração lê X,
+  ela vai passar a ver também Y"), e que a descrição do contrato diga que valores novos podem
+  aparecer.
+- **Tirar ou renomear** um valor de saída é **`exige_acao`**: a integração que dependia dele
+  quebra sem ter feito nada de errado.
+
+O porquê: quem consome um conjunto de saída já tem de tratar o desconhecido, e o valor novo
+costuma corrigir uma informação que antes era falsa (ali, "concluído" para um retorno que não
+saiu). Sem a linha escrita, cada valor novo reabria a discussão de versão maior.
+
 ---
 
 ## Ninguém escolhe o número
@@ -159,6 +176,14 @@ Para conferir o que os fragmentos de agora produziriam, sem escrever nada:
 ```bash
 pnpm release:conferir
 ```
+
+**O fragmento e o mapa da skill de operação.** A skill `deskcomm-operacao`
+ensina ao operador onde fica cada tela, e um fragmento de `capacidade_nova`
+costuma trazer tela ou botão novo. Por isso, quando um PR traz fragmento (ou
+mexe no menu), o pré-voo e o CI conferem se toda tela do `catalogo.ts` está no
+mapa da skill e AVISAM (nunca reprovam). O conserto é acrescentar a tela em
+`references/mapa-da-interface.md` e rodar `pnpm skills:sync`. Comando:
+`bash .agents/skills/deskcomm-operacao/scripts/conferir-mapa.sh`.
 
 Três propriedades, e cada uma resolve um defeito medido:
 

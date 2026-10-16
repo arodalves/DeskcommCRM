@@ -16,6 +16,7 @@ readonly RAM_MINIMA_KB=3500000
 
 # shellcheck source=_common.sh
 source "$KIT_DIR/_common.sh"
+source "$KIT_DIR/_supabase-images.sh"
 # SUPABASE_REF vem do _common.sh: o update.sh leva quem já instalou até ela.
 # O SHA-256 é do setup.sh DESSA ref — bump de uma exige o da outra.
 readonly SUPABASE_SETUP_URL="https://raw.githubusercontent.com/supabase/supabase/${SUPABASE_REF}/docker/setup.sh"
@@ -77,6 +78,14 @@ if [[ -z "$domain" ]]; then
 fi
 domain="$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
 validar_dominio "$domain" || die "Dominio invalido. Informe somente o host, sem https:// nem caminho."
+# A porta do gateway do Supabase no host (loopback). O padrão da ref é 8000, que
+# num Coolify é a do painel. Validada aqui, antes de baixar qualquer coisa; é
+# gravada no .env do Supabase mais abaixo, porque o dc_supabase roda com `env -i`
+# e só lê de lá — e é de lá que o update.sh a herda.
+if [[ -n "${API_GW_HTTP_PORT:-}" ]]; then
+  [[ "$API_GW_HTTP_PORT" =~ ^[1-9][0-9]{3,4}$ ]] && (( API_GW_HTTP_PORT >= 1024 && API_GW_HTTP_PORT <= 65535 )) \
+    || die "API_GW_HTTP_PORT inválida ('${API_GW_HTTP_PORT}'): use um número entre 1024 e 65535, por exemplo 8001."
+fi
 
 command -v docker >/dev/null 2>&1 || die "Docker nao esta instalado. Rode primeiro ubuntu-production-installer.sh."
 docker info >/dev/null 2>&1 || die "Nao foi possivel acessar o daemon Docker."
@@ -89,11 +98,43 @@ if [[ "${mem_kb:-0}" -lt "$RAM_MINIMA_KB" && "${SINGLE_SERVER_ALLOW_LOW_MEMORY:-
   die "O modo single-server exige pelo menos 4 GB de RAM e recomenda 8 GB. Esta VPS tem aproximadamente $((mem_kb / 1024)) MB."
 fi
 
+# Cloudflare Tunnel não combina com o Supabase self-hosted: neste modo é o Caddy
+# que publica as seis APIs do Supabase (Auth, REST, Realtime, Storage...) pelo
+# Caddyfile.single-server. Com o Caddy desligado, o túnel não tem para onde
+# mandar /auth/v1* e o CRM sobe sem conseguir logar. Recusa ANTES de gerar
+# segredo, baixar imagem ou subir contêiner — falha cedo e barata.
+_rp_cloudflared="${REVERSE_PROXY:-}"
+if [[ -z "$_rp_cloudflared" && -f "$ROOT_DIR/.env" ]]; then
+  _rp_cloudflared="$(ler_env "$ROOT_DIR/.env" REVERSE_PROXY)"
+fi
+if [[ "$_rp_cloudflared" == "cloudflared" ]]; then
+  die "O modo single-server não suporta REVERSE_PROXY=cloudflared: as APIs do Supabase dependem do Caddy. Use o proxy padrão (Caddy), ou o Cloudflare Tunnel apenas com o Supabase na nuvem."
+fi
+unset _rp_cloudflared
+
 # Invariante 8 (docs/doctrine/packaging.md), ANTES de baixar ou subir qualquer
 # coisa: uma segunda árvore do CRM na VPS não sobe um Supabase por cima do da
 # primeira, nem deixa um Supabase órfão para o install.sh recusar depois.
 recusar_projeto_de_outra_arvore || die "Instalação interrompida para não derrubar o CRM que já está no ar nesta VPS."
 recusar_supabase_de_outra_arvore || die "Instalação interrompida para não derrubar o Supabase de outra instalação nesta VPS."
+
+# ARM64: os dois conjuntos são sondados ANTES de .runtime, rede, credenciais e
+# setup. Uma WAHA personalizada (inclusive Plus) vinda do .env existente é
+# preservada pela sonda, e o install.sh repetirá a mesma conferência antes de
+# subir o CRM. Em AMD64 segue como antes: a sonda exige `docker buildx`.
+plataforma="$(plataforma_oci_do_host "$(uname -m 2>/dev/null || true)" 2>/dev/null || true)"
+if [[ "$plataforma" = linux/arm64 ]]; then
+  if [[ -f "$ROOT_DIR/.env" ]]; then load_env "$ROOT_DIR/.env"; fi
+  step "Conferindo imagens publicadas do CRM, WAHA e Supabase para $plataforma"
+  release_tag="$(ultima_release_estavel)"
+  [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || die "Não encontrei release numérica publicada; nenhuma parte do Supabase foi criada."
+  waha_efetiva="${WAHA_IMAGE:-$(imagem_waha_padrao_para_host)}"
+  preflight_instalacao "${release_tag#v}" "$plataforma" "$waha_efetiva" \
+    || die "Imagens do CRM ou WAHA incompletas para $plataforma; nenhuma parte do Supabase foi criada."
+  preflight_supabase_da_ref "$SUPABASE_REF" "$plataforma" \
+    || die "Imagens do Supabase incompletas para $plataforma; nenhuma parte foi criada."
+fi
 
 mkdir -p "$RUNTIME_DIR"
 chmod 700 "$RUNTIME_DIR"
@@ -105,7 +146,18 @@ if [[ ! -f "$SUPABASE_DIR/.env" ]]; then
   curl -fsSL --max-time 30 "$SUPABASE_SETUP_URL" -o "$setup_tmp"
   checksum="$(sha256sum "$setup_tmp" | awk '{print $1}')"
   [[ "$checksum" == "$SUPABASE_SETUP_SHA256" ]] || die "O instalador oficial do Supabase nao passou na verificacao SHA-256."
-  (cd "$ROOT_DIR" && sh "$setup_tmp" -y --skip-deps --ref "$SUPABASE_REF" --project-dir ".runtime/supabase")
+  # O setup.sh oficial imprime NOME=valor de cada segredo que gera (service_role,
+  # JWT_SECRET, senha do Postgres): a saída inteira vai para um arquivo que só o
+  # root lê, e a tela recebe só os passos (`===>`), ao vivo.
+  setup_log="$RUNTIME_DIR/supabase-setup.log"
+  (umask 077 && : > "$setup_log")
+  # umask 022 FIXO: o setup.sh grava os init-scripts do Postgres em volumes/db/, e
+  # com um umask restrito no terminal (077 ou 027) eles nasceriam ilegíveis a outros — o
+  # Postgres do contêiner não os lê e o Supabase não sobe, sem mensagem que aponte
+  # a causa. Quem protege os segredos é o .runtime 700, criado acima.
+  (umask 022 && cd "$ROOT_DIR" && sh "$setup_tmp" -y --skip-deps --ref "$SUPABASE_REF" --project-dir ".runtime/supabase") 2>&1 \
+    | tee "$setup_log" | { grep --line-buffered '^===>' || true; } \
+    || die "O instalador oficial do Supabase falhou. A saída completa está em $setup_log (contém as chaves geradas; não compartilhe)."
   rm -f "$setup_tmp"
   trap - EXIT
 fi
@@ -121,11 +173,12 @@ set_env_var "$supabase_env" SITE_URL "https://${domain}"
 set_env_var "$supabase_env" ADDITIONAL_REDIRECT_URLS "https://${domain}/auth/confirm,https://${domain}/**"
 # ── E-mails de acesso: o GoTrue busca o MOLDE no app (#2109) ────────────────
 # A função mora no _common.sh porque o update.sh também a chama, para quem
-# instalou antes deste conserto (o porquê está lá). Gravada ANTES do
+# instalou antes deste conserto (o porquê está lá). A base é a INTERNA do app,
+# pela rede privada, e não o domínio público (#2587, o porquê também está lá). Gravada ANTES do
 # `dc_supabase up -d --wait` de baixo: no primeiro boot o auth já nasce
 # configurado, e numa re-execução o compose recria o contêiner cujo ambiente
 # mudou.
-gravar_modelos_do_gotrue "$supabase_env" "https://${domain}"
+gravar_modelos_do_gotrue "$supabase_env" "$BASE_INTERNA_DO_APP"
 # Confirmacao de e-mail fica LIGADA: sem ela qualquer pessoa cria conta com
 # um e-mail que nao e dela. Fixada aqui, e nao herdada do default do Supabase,
 # para que um bump do SUPABASE_REF nao a desligue calado. Vigiado por
@@ -145,6 +198,7 @@ set_env_var "$supabase_env" SINGLE_SERVER_NETWORK "$SINGLE_SERVER_NETWORK"
 # modo; quem decide se o Traefik enxerga o Envoy é a chave gravada AQUI, ANTES
 # do `dc_supabase up -d --wait`: no primeiro boot o contêiner já nasce com a
 # rota, e numa re-execução o compose o recria porque o label mudou.
+compose_file="docker-compose.yml:docker-compose.deskcomm.yml"
 if [ "${REVERSE_PROXY:-caddy}" = "traefik" ]; then
   set_env_var "$supabase_env" TRAEFIK_ENABLE true
   set_env_var "$supabase_env" TRAEFIK_HOST "$domain"
@@ -154,14 +208,27 @@ if [ "${REVERSE_PROXY:-caddy}" = "traefik" ]; then
   # os mesmos do docker-compose.traefik.yml.
   set_env_var "$supabase_env" TRAEFIK_ENTRYPOINT "${TRAEFIK_ENTRYPOINT:-websecure}"
   set_env_var "$supabase_env" TRAEFIK_CERTRESOLVER "${TRAEFIK_CERTRESOLVER:-letsencrypt}"
+  # Traefik em BRIDGE (Coolify, Dokploy): ele só alcança o Envoy numa rede que
+  # os dois compartilhem. Com TRAEFIK_NETWORK exportado, um terceiro arquivo põe
+  # o api-gw nessa rede e manda o Traefik procurá-lo nela. Sem a variável
+  # (Traefik em modo host, como na Hostinger), nada muda: o host alcança
+  # qualquer bridge.
+  if [ -n "${TRAEFIK_NETWORK:-}" ]; then
+    docker network inspect "$TRAEFIK_NETWORK" >/dev/null 2>&1 \
+      || die "A rede Docker '${TRAEFIK_NETWORK}' (TRAEFIK_NETWORK) não existe. Confira o nome da rede do seu proxy com: docker network ls"
+    cp "$KIT_DIR/supabase-single-server.traefik.yml" "$SUPABASE_DIR/docker-compose.deskcomm-traefik.yml"
+    set_env_var "$supabase_env" TRAEFIK_NETWORK "$TRAEFIK_NETWORK"
+    compose_file="${compose_file}:docker-compose.deskcomm-traefik.yml"
+  fi
 else
   # Gravado explicitamente, não deixado em aberto: uma re-execução em modo
   # Caddy sobre uma árvore que já foi Traefik desliga a rota, em vez de deixar
   # um `true` órfão interpolando.
   set_env_var "$supabase_env" TRAEFIK_ENABLE false
 fi
-set_env_var "$supabase_env" COMPOSE_FILE "docker-compose.yml:docker-compose.deskcomm.yml"
+set_env_var "$supabase_env" COMPOSE_FILE "$compose_file"
 set_env_var "$supabase_env" COMPOSE_PROJECT_NAME "$(projeto_do_supabase)"
+[[ -n "${API_GW_HTTP_PORT:-}" ]] && set_env_var "$supabase_env" API_GW_HTTP_PORT "$API_GW_HTTP_PORT"
 gw_port="$(ler_env "$supabase_env" API_GW_HTTP_PORT)"
 
 step "Subindo o Supabase local"

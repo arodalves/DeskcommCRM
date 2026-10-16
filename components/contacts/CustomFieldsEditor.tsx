@@ -1,10 +1,18 @@
 "use client";
+import { useState } from "react";
 /**
  * CustomFieldsEditor — lê `crm_pipelines.settings.fields[]` e renderiza o
  * input certo por tipo. Usado pelo dossiê e pelo painel do inbox, via
- * `LeadFieldsForm`.
+ * `LeadFieldsForm`, e pela ficha do contato (`EditContactDialog`) — é o
+ * renderizador ÚNICO dos campos personalizados.
+ *
+ * Por isso o filtro de `mostrar_quando` (issue #2728) mora AQUI: um ponto só
+ * cobre os quatro que renderizam, e o dia em que alguém desenhar as
+ * definições por conta própria reprova
+ * `tests/unit/campo-condicional-nos-pontos-de-renderizacao.test.ts`.
  */
 import { useActiveOrg } from "@/hooks/auth/AuthProvider";
+import { parseReaisToCents } from "@/lib/money";
 import { Input } from "@/components/ui/input";
 import { perfilDoPais } from "@/lib/legal/perfil-do-pais";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,11 +27,13 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { useT } from "@/hooks/i18n/useT";
 import { cn } from "@/lib/utils";
+import { camposVisiveis, type MostrarQuando } from "@/lib/schemas/mostrar-quando";
 
 export type CustomFieldType =
   | "text"
   | "textarea"
   | "number"
+  | "currency"
   | "date"
   | "select"
   | "multiselect"
@@ -38,6 +48,15 @@ export interface CustomFieldDef {
   type: CustomFieldType;
   required?: boolean;
   options?: Array<{ value: string; label: string }>;
+  /**
+   * A condição de exibição (issue #2728) — `lib/schemas/mostrar-quando.ts`.
+   *
+   * Quem decide se o campo aparece é ESTE componente, olhando os valores que
+   * ele mesmo está renderizando. Esconder é filtrar a lista: `value` não é
+   * mexido, então o que já estava gravado continua dentro do estado do editor
+   * e viaja no save — esconder não é limpar.
+   */
+  mostrar_quando?: MostrarQuando;
 }
 
 interface Props {
@@ -51,6 +70,7 @@ interface Props {
 
 export function CustomFieldsEditor({ fields, value, onChange, disabled, className }: Props) {
   const t = useT();
+  const [rascunhosDeMoeda, setRascunhosDeMoeda] = useState<Record<string, string>>({});
   // O campo é do mesmo caminho do contato: o exemplo segue o país da
   // organização, e não o DDI brasileiro em duro.
   const telefoneExemplo = perfilDoPais(useActiveOrg()?.country).telefoneExemplo;
@@ -58,9 +78,18 @@ export function CustomFieldsEditor({ fields, value, onChange, disabled, classNam
     onChange({ ...value, [key]: v });
   }
 
+  /**
+   * Os campos que ESTA vez aparecem — o filtro da condição (issue #2728).
+   *
+   * O filtro é sobre a LISTA, nunca sobre `value`: o que já estava gravado
+   * continua dentro do objeto e viaja no save, e o campo volta à tela no
+   * instante em que a condição cumpre. Esconder não é limpar.
+   */
+  const visiveis = camposVisiveis(fields, value);
+
   return (
     <div className={cn("grid grid-cols-1 gap-4 md:grid-cols-2", className)}>
-      {fields.map((f) => {
+      {visiveis.map((f) => {
         const v = value[f.key];
         const id = `cf-${f.key}`;
 
@@ -99,6 +128,40 @@ export function CustomFieldsEditor({ fields, value, onChange, disabled, classNam
                 />
               </div>
             );
+          case "currency": {
+            const valorNumerico = typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v) : null;
+            const formatado =
+              valorNumerico !== null && Number.isFinite(valorNumerico)
+                ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(valorNumerico)
+                : "";
+            return (
+              <div key={f.key} className="space-y-2">
+                {labelEl}
+                <Input
+                  id={id}
+                  type="text"
+                  inputMode="decimal"
+                  value={rascunhosDeMoeda[f.key] ?? formatado}
+                  onChange={(e) => setRascunhosDeMoeda((current) => ({ ...current, [f.key]: e.target.value }))}
+                  onBlur={() => {
+                    const draft = rascunhosDeMoeda[f.key];
+                    if (draft === undefined) return;
+                    const raw = draft.trim().replace(/^R\$\s*/i, "").replace(/\s/g, "");
+                    const centavos = raw === "" ? null : parseReaisToCents(raw);
+                    if (centavos !== null) set(f.key, centavos / 100);
+                    else if (raw === "") set(f.key, null);
+                    setRascunhosDeMoeda((current) => {
+                      const next = { ...current };
+                      delete next[f.key];
+                      return next;
+                    });
+                  }}
+                  disabled={disabled}
+                  placeholder="R$ 0,00"
+                />
+              </div>
+            );
+          }
           case "date":
             return (
               <div key={f.key} className="space-y-2">
