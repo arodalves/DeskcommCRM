@@ -96,6 +96,13 @@ export const triggerConfigSchema = z.discriminatedUnion("kind", [
     }).optional(),
     ...CANCEL_ON_REPLY,
   }),
+  z.strictObject({
+    kind: z.literal("prospecting_conversation_interrupted"),
+    params: z.strictObject({
+      campaign_ids: z.array(z.string().uuid()).optional(),
+    }).optional(),
+    ...CANCEL_ON_REPLY,
+  }),
 ]);
 export type TriggerConfig = z.infer<typeof triggerConfigSchema>;
 

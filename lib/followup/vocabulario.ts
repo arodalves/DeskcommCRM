@@ -619,6 +619,7 @@ export const GATILHOS: Record<TipoDeGatilho, string> = {
   inbound_after_silence: "Cliente voltou",
   conversation_end: "Fim da conversa",
   prospecting_initial_accepted: "Primeira abordagem aceita pelo provedor",
+  prospecting_conversation_interrupted: "Prospecção Comercial (Conversa Interrompida)",
 };
 
 /**

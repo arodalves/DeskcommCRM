@@ -5406,6 +5406,27 @@ async function executarTurnoDoAgente(
       messages_sent: outcomes.length,
       model: turn.model,
     });
+
+    const sentOutcomes = outcomes.filter((o) => o.kind === 'sent' || o.kind === 'already_sent');
+    if (sentOutcomes.length > 0 && !preview) {
+      try {
+        const { verificarEEmitirConversaInterrompida } = await import(
+          '@/lib/followup/gatilho-prospeccao'
+        );
+        const lastMsgId = sentOutcomes[sentOutcomes.length - 1]?.messageId ?? null;
+        await verificarEEmitirConversaInterrompida(pool, {
+          tenantId,
+          conversationId: input.conversationId,
+          contactId: leadId,
+          agentId: agentConfig?.agentId ?? null,
+          lastMessageId: lastMsgId,
+        });
+      } catch (emitErr) {
+        runLog.warn('emissão de evento conversa interrompida falhou (best-effort)', {
+          error: emitErr instanceof Error ? emitErr.message : String(emitErr),
+        });
+      }
+    }
   } finally {
     // Turno que terminou sem enviar (veto, handoff, erro) também para de renovar.
     pararDigitando();

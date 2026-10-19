@@ -31,6 +31,8 @@ export type EnrollFollowupInput = {
   prospectingCampaignId?: string;
   prospectingAcceptedAt?: string;
   prospectingActivationVersion?: number | null;
+  prospectingLastOutboundAt?: string;
+  prospectingOutboundMessageId?: string;
   nextEvalAt?: string;
 };
 
@@ -147,6 +149,8 @@ export async function enrollFollowupFlow(
       prospecting_campaign_id: input.prospectingCampaignId ?? null,
       prospecting_accepted_at: input.prospectingAcceptedAt ?? null,
       prospecting_activation_version: input.prospectingActivationVersion ?? null,
+      prospecting_last_outbound_at: input.prospectingLastOutboundAt ?? null,
+      prospecting_outbound_message_id: input.prospectingOutboundMessageId ?? null,
       ...(input.nextEvalAt ? { next_eval_at: input.nextEvalAt } : {}),
     })
     .select(ENROLLMENT_LIST_COLUMNS)

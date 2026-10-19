@@ -121,6 +121,7 @@ export interface ChecarPrecondicoesFollowupInput {
   organizationId: string;
   enrollmentId: string;
   candidateId?: string | null;
+  isConversaInterrompida?: boolean;
 }
 
 export type ResultadoPrecondicoesFollowup =
@@ -144,7 +145,7 @@ export async function assertProspectingFollowupPreconditions(
   // 1. Carregar enrollment
   const { data: enrollment, error: enrErr } = await db
     .from("followup_enrollments")
-    .select("id, organization_id, contact_id, conversation_id, status, prospecting_candidate_id, prospecting_campaign_id, prospecting_accepted_at")
+    .select("id, organization_id, contact_id, conversation_id, status, pointer_id, prospecting_candidate_id, prospecting_campaign_id, prospecting_accepted_at, prospecting_last_outbound_at, started_at")
     .eq("organization_id", organizationId)
     .eq("id", enrollmentId)
     .maybeSingle();
@@ -300,29 +301,6 @@ export async function assertProspectingFollowupPreconditions(
     return { ok: false, reason: "Conversa não encontrada.", terminal: true };
   }
 
-  // Cliente já respondeu?
-  const acceptedAtTime = candidate.provider_accepted_at ? new Date(candidate.provider_accepted_at).getTime() : 0;
-  if (conv.last_inbound_at) {
-    const inboundTime = new Date(conv.last_inbound_at).getTime();
-    if (inboundTime >= acceptedAtTime) {
-      return { ok: false, reason: "O cliente já respondeu à abordagem.", terminal: true };
-    }
-  }
-
-  // Checagem direta de mensagens inbound após o aceite
-  const { data: inboundMessages } = await db
-    .from("messages")
-    .select("id, created_at")
-    .eq("organization_id", organizationId)
-    .eq("conversation_id", candidate.conversation_id)
-    .eq("direction", "inbound")
-    .gt("created_at", candidate.provider_accepted_at)
-    .limit(1);
-
-  if (inboundMessages && inboundMessages.length > 0) {
-    return { ok: false, reason: "O cliente já respondeu à abordagem.", terminal: true };
-  }
-
   // Atendimento humano / Handoff
   if (conv.assigned_to_user_id) {
     return { ok: false, reason: "Conversa assumida por operador humano (handoff).", terminal: true };
@@ -342,6 +320,85 @@ export async function assertProspectingFollowupPreconditions(
   }
   if (conv.bot_silenced_until && Date.parse(conv.bot_silenced_until) > Date.now()) {
     return { ok: false, reason: "Bot temporariamente silenciado na conversa.", terminal: true };
+  }
+
+  // Determinar se o fluxo é conversa interrompida
+  let isConversaInterrompida = input.isConversaInterrompida ?? false;
+  if (!isConversaInterrompida && enrollment.pointer_id) {
+    const { data: pointer } = await db
+      .from("followup_flow_pointers")
+      .select("name, trigger_config")
+      .eq("organization_id", organizationId)
+      .eq("id", enrollment.pointer_id)
+      .maybeSingle();
+
+    const triggerKind = (pointer?.trigger_config as { kind?: string } | undefined)?.kind;
+    if (
+      pointer?.name === "Prospecção comercial — conversa interrompida" ||
+      triggerKind === "prospecting_conversation_interrupted"
+    ) {
+      isConversaInterrompida = true;
+    }
+  }
+
+  if (isConversaInterrompida) {
+    // 1. Prospect deve ter respondido pelo menos uma vez antes do follow-up
+    const { data: previousInbound } = await db
+      .from("messages")
+      .select("id, created_at")
+      .eq("organization_id", organizationId)
+      .eq("conversation_id", candidate.conversation_id)
+      .eq("direction", "inbound")
+      .gt("created_at", candidate.provider_accepted_at)
+      .limit(1);
+
+    if (!previousInbound || previousInbound.length === 0) {
+      return { ok: false, reason: "Prospect nunca respondeu à abordagem inicial.", terminal: true };
+    }
+
+    // 2. Prospect NÃO pode ter respondido APÓS a mensagem que originou este follow-up
+    const cutoffIso = enrollment.prospecting_last_outbound_at ?? enrollment.started_at;
+    const cutoffTime = new Date(cutoffIso).getTime();
+
+    if (conv.last_inbound_at && new Date(conv.last_inbound_at).getTime() >= cutoffTime) {
+      return { ok: false, reason: "O cliente já respondeu após a mensagem que originou o follow-up.", terminal: true };
+    }
+
+    const { data: recentInbounds } = await db
+      .from("messages")
+      .select("id, created_at")
+      .eq("organization_id", organizationId)
+      .eq("conversation_id", candidate.conversation_id)
+      .eq("direction", "inbound")
+      .gt("created_at", cutoffIso)
+      .limit(1);
+
+    if (recentInbounds && recentInbounds.length > 0) {
+      return { ok: false, reason: "O cliente já respondeu após a mensagem que originou o follow-up.", terminal: true };
+    }
+  } else {
+    // Cliente já respondeu? (Fluxo "sem resposta")
+    const acceptedAtTime = candidate.provider_accepted_at ? new Date(candidate.provider_accepted_at).getTime() : 0;
+    if (conv.last_inbound_at) {
+      const inboundTime = new Date(conv.last_inbound_at).getTime();
+      if (inboundTime >= acceptedAtTime) {
+        return { ok: false, reason: "O cliente já respondeu à abordagem.", terminal: true };
+      }
+    }
+
+    // Checagem direta de mensagens inbound após o aceite
+    const { data: inboundMessages } = await db
+      .from("messages")
+      .select("id, created_at")
+      .eq("organization_id", organizationId)
+      .eq("conversation_id", candidate.conversation_id)
+      .eq("direction", "inbound")
+      .gt("created_at", candidate.provider_accepted_at)
+      .limit(1);
+
+    if (inboundMessages && inboundMessages.length > 0) {
+      return { ok: false, reason: "O cliente já respondeu à abordagem.", terminal: true };
+    }
   }
 
   // 8. Oportunidade (crm_leads) não encerrada em condição impeditiva
