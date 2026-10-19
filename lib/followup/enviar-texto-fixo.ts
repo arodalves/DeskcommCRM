@@ -16,6 +16,7 @@ import type { EnrollmentRow } from "@/lib/followup/node-handlers";
 import { completeTurnForEnrollment, type TurnBridgeAdminClient } from "@/lib/followup/turn-bridge";
 import { logger } from "@/lib/logger";
 import { OrgNaoOperanteError } from "@/lib/organizacao/operante";
+import { assertProspectingFollowupPreconditions } from "@/lib/prospecting/guard";
 
 function ponteSupabase(admin: SupabaseClient): TurnBridgeAdminClient {
   const base = createSupabaseAdminClient(admin);
@@ -108,7 +109,7 @@ export async function enviarTextoFixoPendente(
     try {
       const { data: enr } = await admin
         .from("followup_enrollments")
-        .select("current_node_id,status,revision")
+        .select("current_node_id,status,revision,prospecting_candidate_id")
         .eq("id", enrollmentId)
         .eq("organization_id", job.organization_id as string)
         .maybeSingle();
@@ -116,6 +117,47 @@ export async function enviarTextoFixoPendente(
         await settle(job.organization_id,job.id,jobClaim.acquired_at,true);
         continue;
       }
+
+      if (enr.prospecting_candidate_id) {
+        const precond = await assertProspectingFollowupPreconditions(admin, {
+          organizationId: job.organization_id as string,
+          enrollmentId,
+          candidateId: enr.prospecting_candidate_id,
+        });
+        if (!precond.ok) {
+          logger.info("[followup] pré-condições da prospecção falharam — cancelando inscrição definitivamente", {
+            organization_id: job.organization_id,
+            enrollment_id: enrollmentId,
+            candidate_id: enr.prospecting_candidate_id,
+            reason: precond.reason,
+          });
+          await admin
+            .from("followup_enrollments")
+            .update({
+              status: "cancelled",
+              cancel_reason: precond.reason,
+              completed_at: new Date().toISOString(),
+              next_eval_at: null,
+              claimed_until: null,
+            })
+            .eq("id", enrollmentId)
+            .eq("organization_id", job.organization_id as string);
+
+          await completeTurnForEnrollment(
+            ponte,
+            job.organization_id as string,
+            enrollmentId,
+            nodeId,
+            { kind: "skipped", reason: precond.reason },
+            undefined,
+            job.id,
+            jobClaim,
+          );
+          await settle(job.organization_id, job.id, jobClaim.acquired_at, true);
+          continue;
+        }
+      }
+
       const boundary = parseServiceBoundary((job.payload as Record<string, unknown>).service_boundary);
       await assertServiceBoundarySupabase(admin, boundary);
       const conversationId = boundary!.conversation_id;

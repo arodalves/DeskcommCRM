@@ -207,7 +207,7 @@ export async function POST(req: NextRequest) {
         )
           throw new ProspectingError("Pause a outra campanha antes de retomar.", 409);
         await db.query(
-          "update prospecting_campaigns set status='running',error=null,next_send_at=greatest(next_send_at,now()+interval '1 minute'),updated_at=now() where organization_id=$1 and id=$2",
+          "update prospecting_campaigns set status='running',activated_at=now(),activation_version=coalesce(activation_version,0)+1,error=null,next_send_at=greatest(next_send_at,now()+interval '1 minute'),updated_at=now() where organization_id=$1 and id=$2",
           [org, body.id],
         );
         return { resumed: true };

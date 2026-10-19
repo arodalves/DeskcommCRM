@@ -95,7 +95,9 @@ export function horizonteDoModeloMs(grafo: FlowGraph): number {
       no?.type === "wait"
         ? no.config.mode === "fixed"
           ? no.config.duration_ms
-          : no.config.max_ms
+          : no.config.mode === "business_days"
+            ? no.config.days * 86_400_000
+            : no.config.max_ms
         : no?.type === "match_reply"
           ? no.config.grace_timeout_ms
           : no?.type === "ai_classify"

@@ -190,8 +190,8 @@ export async function sendNextCandidate(
   await db.query("begin");
   try {
     await db.query(
-      "update prospecting_candidates set status='sending',attempted_at=now(),updated_at=now() where organization_id=$1 and id=$2",
-      [c.organization_id, p.id],
+      "update prospecting_candidates set status='sending',attempted_at=now(),activation_timestamp=$3,activation_version=$4,updated_at=now() where organization_id=$1 and id=$2",
+      [c.organization_id, p.id, c.activated_at ?? now, c.activation_version ?? 1],
     );
     // O agendamento leva JITTER: o intervalo exato (`now + N minutos`, sempre o
     // mesmo número de milissegundos) é cadência de robô, que é justamente o que
@@ -292,22 +292,58 @@ export async function sendNextCandidate(
       },
     );
     const sent = ["sent", "delivered", "read"].includes(message.status);
+    const nowIso = new Date().toISOString();
     if (!sent) {
       // This lane never auto-retries an uncertain send. The Inbox keeps the evidence.
       await db.query(
         "update messages set status='failed' where organization_id=$1 and id=$2 and status in ('queued','sending')",
         [c.organization_id, p.message_id],
       );
+      await db.query(
+        "update prospecting_candidates set status='failed',error=$3,updated_at=now() where organization_id=$1 and id=$2",
+        [
+          c.organization_id,
+          p.id,
+          "Envio não confirmado. Consulte a conversa antes de reenviar.",
+        ],
+      );
+    } else {
+      await db.query(
+        "update prospecting_candidates set status='sent',provider_accepted_at=now(),error=null,updated_at=now() where organization_id=$1 and id=$2",
+        [c.organization_id, p.id],
+      );
+
+      // Emissão durável do evento prospecting.initial_outbound_accepted
+      try {
+        await admin.rpc("emit_event", {
+          p_event_type: "prospecting.initial_outbound_accepted",
+          p_entity_kind: "prospecting_candidate",
+          p_entity_id: p.id,
+          p_payload: {
+            candidate_id: p.id,
+            campaign_id: c.id,
+            lead_id: p.lead_id,
+            contact_id: p.contact_id,
+            conversation_id: p.conversation_id,
+            message_id: p.message_id,
+            provider_accepted_at: nowIso,
+            attempted_at: nowIso,
+            activation_version: c.activation_version ?? 1,
+            activation_timestamp: (c.activated_at ? new Date(c.activated_at) : now).toISOString(),
+          },
+          p_metadata: {
+            source: "prospecting_worker",
+            request_id: `prospecting:${p.id}`,
+          },
+          p_organization_id: c.organization_id,
+        });
+      } catch (err) {
+        logger.warn("[prospecting] falha ao emitir prospecting.initial_outbound_accepted", {
+          candidateId: p.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
-    await db.query(
-      "update prospecting_candidates set status=$3,error=$4,updated_at=now() where organization_id=$1 and id=$2",
-      [
-        c.organization_id,
-        p.id,
-        sent ? "sent" : "failed",
-        sent ? null : "Envio não confirmado. Consulte a conversa antes de reenviar.",
-      ],
-    );
 
     /*
      * A TRILHA DA ABORDAGEM FRIA — quem foi abordado, por qual campanha, quando.

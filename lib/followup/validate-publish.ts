@@ -267,16 +267,18 @@ const MIN_CYCLE_WAIT_MS = 300_000; // 5min
 const MAX_PATH_STEPS = 30;
 
 function waitMs(config: Extract<FlowNode, { type: 'wait' }>['config']): number {
-  return config.mode === 'fixed' ? config.duration_ms : config.max_ms;
+  if (config.mode === 'fixed') return config.duration_ms;
+  if (config.mode === 'business_days') return config.days * 86_400_000;
+  return config.max_ms;
 }
 
 /** A wait node whose duration meets the 5min floor required to break a cycle. */
 function isSufficientWaitNode(node: FlowNode): boolean {
   if (node.type === 'match_reply') return node.config.grace_timeout_ms >= MIN_CYCLE_WAIT_MS;
   if (node.type !== 'wait') return false;
-  return node.config.mode === 'fixed'
-    ? node.config.duration_ms >= MIN_CYCLE_WAIT_MS
-    : node.config.min_ms >= MIN_CYCLE_WAIT_MS;
+  if (node.config.mode === 'fixed') return node.config.duration_ms >= MIN_CYCLE_WAIT_MS;
+  if (node.config.mode === 'business_days') return node.config.days >= 1;
+  return node.config.min_ms >= MIN_CYCLE_WAIT_MS;
 }
 
 function buildOutEdges(edges: FlowEdge[]): Map<string, FlowEdge[]> {

@@ -167,7 +167,9 @@ export function resumoDoNo(node: FlowNode): NoDoDossie {
         resumo:
           node.config.mode === "fixed"
             ? `espera ${duracaoLegivel(node.config.duration_ms)}`
-            : `espera adaptativa, entre ${duracaoLegivel(node.config.min_ms)} e ${duracaoLegivel(node.config.max_ms)}`,
+            : node.config.mode === "business_days"
+              ? `espera ${node.config.days} ${node.config.days === 1 ? "dia útil" : "dias úteis"}`
+              : `espera adaptativa, entre ${duracaoLegivel(node.config.min_ms)} e ${duracaoLegivel(node.config.max_ms)}`,
       };
     case "condition":
       return {

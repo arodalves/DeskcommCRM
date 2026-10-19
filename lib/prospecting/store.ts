@@ -26,6 +26,10 @@ import {
   provedorDaOrganizacao,
   validarCredencialDaOrganizacao,
 } from "./provedor";
+import {
+  correspondeALeadManualProtegido,
+  checarExclusaoDeProspeccao,
+} from "./exclusions";
 
 export interface Campaign {
   id: string;
@@ -38,6 +42,8 @@ export interface Campaign {
   run_id: string | null;
   dataset_id: string | null;
   next_send_at: Date;
+  activated_at?: Date | string | null;
+  activation_version?: number;
   created_at: Date;
   error: string | null;
 }
@@ -54,6 +60,10 @@ export interface Candidate {
   conversation_id: string | null;
   service_boundary: unknown;
   message_id: string;
+  attempted_at?: Date | string | null;
+  provider_accepted_at?: string | null;
+  activation_timestamp?: string | null;
+  activation_version?: number | null;
 }
 /** Session-scoped PostgreSQL lock shared by commands and worker; no process-local lock. */
 export async function withProspectingLock<T>(
@@ -208,6 +218,15 @@ export async function synchronizeSearch(db: pg.PoolClient, admin: SupabaseClient
     for (const item of items) {
       const p = normalizeProspect(item);
       if (!p) continue;
+      const exclusaoMemoria = correspondeALeadManualProtegido(p.name);
+      if (exclusaoMemoria.protegido) continue;
+      const exclusaoBanco = await checarExclusaoDeProspeccao(admin, {
+        organizationId: c.organization_id,
+        phone: p.phone,
+        placeId: p.key,
+        title: p.name,
+      });
+      if (exclusaoBanco.excluido) continue;
       const result = await db.query(
         "insert into prospecting_candidates(organization_id,campaign_id,place_id,phone,data) values($1,$2,$3,$4,$5) on conflict do nothing",
         [c.organization_id, c.id, p.key, p.phone, p],
@@ -310,6 +329,10 @@ export async function triarCandidato(
   p: Candidate,
 ): Promise<{ motivo: string } | { contatoDaCampanha: string | null }> {
   if (!p.phone) return { motivo: "Sem telefone brasileiro válido." };
+  const exclusaoTitulo = correspondeALeadManualProtegido(p.data?.name ?? (p.data as any)?.title);
+  if (exclusaoTitulo.protegido) {
+    return { motivo: `Lead manual protegido (${exclusaoTitulo.leadProtegido}); prospecção descartada.` };
+  }
   const known = await db.query(
     "select id from contacts where organization_id=$1 and phone_number=any($2::text[])",
     [org, phoneLookupVariants(p.phone)],
@@ -570,7 +593,7 @@ export async function activateCampaign(
     ).rows;
     await enfileirarCandidatos(db, admin, org, c, config, candidates);
     await db.query(
-      "update prospecting_campaigns set config=$3,status='running',next_send_at=now()+interval '1 minute',error=null,updated_at=now() where organization_id=$1 and id=$2",
+      "update prospecting_campaigns set config=$3,status='running',activated_at=now(),activation_version=coalesce(activation_version,0)+1,next_send_at=now()+interval '1 minute',error=null,updated_at=now() where organization_id=$1 and id=$2",
       [org, id, config],
     );
     return { started: true };

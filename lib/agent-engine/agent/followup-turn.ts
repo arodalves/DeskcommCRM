@@ -688,6 +688,38 @@ async function runFlowDrivenTurn(
   const runLog = withFields(deps.log, { job_id: job.id, tenant_id: target.tenantId, lead_id: target.leadId, enrollment_id: enrollmentId });
 
   if (input.purpose === 'send_message') {
+    const enrRes = await pool.query(
+      "select prospecting_candidate_id from followup_enrollments where organization_id=$1 and id=$2",
+      [target.tenantId, enrollmentId],
+    );
+    const prospectingCandidateId = enrRes.rows[0]?.prospecting_candidate_id as string | undefined;
+    if (prospectingCandidateId) {
+      const { createAdminClient } = await import("@/lib/supabase/admin");
+      const { assertProspectingFollowupPreconditions } = await import("@/lib/prospecting/guard");
+      const admin = createAdminClient();
+      const precond = await assertProspectingFollowupPreconditions(admin, {
+        organizationId: target.tenantId,
+        enrollmentId,
+        candidateId: prospectingCandidateId,
+      });
+      if (!precond.ok) {
+        runLog.info("followup prospecção cancelado por pré-condição", { motivo: precond.reason });
+        await pool.query(
+          "update followup_enrollments set status='cancelled', cancel_reason=$3, completed_at=now(), next_eval_at=null, claimed_until=null where organization_id=$1 and id=$2",
+          [target.tenantId, enrollmentId, precond.reason],
+        );
+        await complete(pool, {
+          jobId: job.id,
+          jobClaim: claimOfJob(job),
+          organizationId: target.tenantId,
+          enrollmentId,
+          nodeId,
+          result: { kind: "skipped", reason: precond.reason },
+        });
+        return;
+      }
+    }
+
     let passo = await resolveFlowSendBody(pool, target.tenantId, target.channelSessionId, target.leadId, input);
     // O PLANO B DA MENSAGEM POR IA. Com a janela de 24 h fechada, o canal recusa
     // qualquer texto livre — o da IA inclusive —, e o passo terminava sem mandar

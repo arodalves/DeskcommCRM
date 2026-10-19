@@ -18,6 +18,7 @@ import { followupReactivityHandler } from "@/lib/followup/reactivity.handler";
 import { campanhaRespostaHandler } from "@/lib/campanhas/resposta.handler";
 import { followupGatilhoEtapaHandler } from "@/lib/followup/gatilho-etapa.handler";
 import { followupGatilhoLeadHandler } from "@/lib/followup/gatilho-lead.handler";
+import { followupGatilhoProspeccaoHandler } from "@/lib/followup/gatilho-prospeccao.handler";
 import { followupGatilhoCasoHandler } from "@/lib/followup/gatilho-caso.handler";
 import { casoNaCentralHandler } from "@/lib/escalacao/caso-na-central.handler";
 import { mediaPersistHandler } from "@/workers/media-persist-worker.handler";
@@ -66,6 +67,7 @@ export function ensureHandlersRegistered(): void {
   // de tudo que sai por rede de terceiro.
   registerHandler(avisoAoDonoDaCarteira);
   registerHandler(followupGatilhoLeadHandler);
+  registerHandler(followupGatilhoProspeccaoHandler);
   registerHandler(followupGatilhoCasoHandler);
   // O caso aberto na Central, na hora — escrita curta no banco (um item), ao
   // lado do outro consumidor de `ai.case_opened` que só escreve no banco, e

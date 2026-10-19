@@ -124,6 +124,14 @@ export const waitConfigSchema = z
       immune_to_reply: z.boolean().optional(),
     }),
     z.strictObject({
+      mode: z.literal('business_days'),
+      days: z.number().int().min(1).max(30),
+      timezone: z.string().optional(),
+      window_start_hour: z.number().int().min(0).max(23).optional(),
+      window_end_hour: z.number().int().min(1).max(24).optional(),
+      immune_to_reply: z.boolean().optional(),
+    }),
+    z.strictObject({
       mode: z.literal('smart'),
       min_ms: z.number().int().min(300_000),
       max_ms: z.number().int().max(7_776_000_000),

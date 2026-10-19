@@ -232,6 +232,9 @@ export function describeNodeConfig(
       return t("Início do fluxo");
     case "wait": {
       const c = config as ConfigOf<"wait">;
+      if (c.mode === "business_days") {
+        return `${c.days} ${c.days === 1 ? t("dia útil") : t("dias úteis")}`;
+      }
       return c.mode === "fixed"
         ? minutos(c.duration_ms)
         : `${Math.round(c.min_ms / 60_000)}–${minutos(c.max_ms)} ${t("(adaptativo)")}`;

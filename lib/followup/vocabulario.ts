@@ -507,6 +507,7 @@ export const ALVOS_DA_CLASSIFICACAO: Record<AlvoDaClassificacao, string> = {
 export const MODOS_DE_ESPERA: Record<ModoDeEspera, string> = {
   fixed: "Tempo fixo",
   smart: "A IA escolhe a hora",
+  business_days: "Dias úteis",
 };
 
 export const MODOS_DA_ACAO: Record<ModoDaAcao, string> = {
@@ -617,6 +618,7 @@ export const GATILHOS: Record<TipoDeGatilho, string> = {
   case_opened: "Quando o agente pede ajuda de um humano",
   inbound_after_silence: "Cliente voltou",
   conversation_end: "Fim da conversa",
+  prospecting_initial_accepted: "Primeira abordagem aceita pelo provedor",
 };
 
 /**

@@ -27,6 +27,11 @@ export type EnrollFollowupInput = {
   agentId?: string;
   actorUserId: string | null;
   requestId: string;
+  prospectingCandidateId?: string;
+  prospectingCampaignId?: string;
+  prospectingAcceptedAt?: string;
+  prospectingActivationVersion?: number | null;
+  nextEvalAt?: string;
 };
 
 export type EnrollFollowupOk = { ok: true; enrollment: Record<string, unknown> };
@@ -138,6 +143,11 @@ export async function enrollFollowupFlow(
       agent_id: agentId,
       service_boundary: boundary,
       conversation_id: boundary.conversation_id,
+      prospecting_candidate_id: input.prospectingCandidateId ?? null,
+      prospecting_campaign_id: input.prospectingCampaignId ?? null,
+      prospecting_accepted_at: input.prospectingAcceptedAt ?? null,
+      prospecting_activation_version: input.prospectingActivationVersion ?? null,
+      ...(input.nextEvalAt ? { next_eval_at: input.nextEvalAt } : {}),
     })
     .select(ENROLLMENT_LIST_COLUMNS)
     .single();

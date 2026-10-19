@@ -9,6 +9,7 @@ import type { FlowEdge, FlowNode, ReplySaveTo } from "./graph-schema";
 import { parseReplyCount } from "./parse-count";
 import { clampEspera, esperaPlanejadaDe, type EsperaAdaptativa } from "./timing-plan";
 import { fraseDeConfirmacao } from "./vocabulario";
+import { adicionarDiasUteis } from "@/lib/prospecting/business-days";
 
 export type EnrollmentStatus =
   | "active"
@@ -628,6 +629,19 @@ export function processNode(input: {
         return { kind: "advance", next_node_id: edge.target, next_eval_at: clock() };
       }
       if (!waitElapsed) {
+        if (node.config.mode === "business_days") {
+          const nextEval = adicionarDiasUteis(clock(), node.config.days, {
+            timezone: node.config.timezone,
+            inicioJanela: node.config.window_start_hour,
+            fimJanela: node.config.window_end_hour,
+          });
+          const imune = node.config.immune_to_reply === true;
+          return {
+            kind: "wait",
+            next_eval_at: nextEval,
+            ...(imune ? { wake_status: "dormente" as const } : {}),
+          };
+        }
         // Adaptativo: o instante vem do plano decidido no acionamento. Sem plano
         // legível para ESTE nó (enrollment anterior à feature, fluxo v1, jsonb
         // corrompido), cai no máximo — que era o comportamento único até aqui.
