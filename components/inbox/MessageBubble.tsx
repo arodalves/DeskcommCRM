@@ -52,14 +52,25 @@ interface Props {
   onRestaurar?: () => Promise<void>;
 }
 
-function AckIndicator({ status, t }: { status: string; t: (texto: string) => string }) {
-  if (status === "read") {
+export function AckIndicator({
+  status,
+  deliveredAt,
+  readAt,
+  t = (texto: string) => texto,
+}: {
+  status: string;
+  deliveredAt?: string | null;
+  readAt?: string | null;
+  t?: (texto: string) => string;
+}) {
+  const effectiveStatus = readAt ? "read" : deliveredAt ? "delivered" : status;
+  if (effectiveStatus === "read") {
     return <Checks size={12} weight="bold" className="text-blue-400" aria-label={t("Lida")} />;
   }
-  if (status === "delivered") {
+  if (effectiveStatus === "delivered") {
     return <Checks size={12} weight="bold" className="text-current/70" aria-label={t("Entregue")} />;
   }
-  if (status === "sent") {
+  if (effectiveStatus === "sent") {
     return <Check size={12} weight="bold" className="text-current/70" aria-label={t("Enviada")} />;
   }
   return null;
@@ -436,7 +447,14 @@ export function MessageBubble({
           {showCitationButton && (
             <CitationButton citations={citations} messageId={message.id} />
           )}
-          {isOutbound && !isFailed && <AckIndicator status={message.status} t={t} />}
+          {isOutbound && !isFailed && (
+            <AckIndicator
+              status={message.status}
+              deliveredAt={message.delivered_at}
+              readAt={message.read_at}
+              t={t}
+            />
+          )}
           {isFailed && (
             // Provider local: o painel do inbox não tem TooltipProvider ancestral e
             // este Tooltip só monta em mensagem failed — sem o provider, abrir uma

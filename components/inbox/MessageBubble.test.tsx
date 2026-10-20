@@ -23,7 +23,7 @@ import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { MessageBubble } from "./MessageBubble";
+import { MessageBubble, AckIndicator } from "./MessageBubble";
 import type { Message } from "@/lib/types/messaging";
 
 function msg(over: Partial<Message> = {}): Message {
@@ -398,5 +398,87 @@ describe("MessageBubble — remetente de grupo", () => {
       />,
     );
     expect(screen.queryByText("Maria · +5521999990000")).toBeNull();
+  });
+});
+
+describe("AckIndicator — visualização de entrega e leitura", () => {
+  it("status sent, sem timestamps → 1 ✓ (Enviada)", () => {
+    render(<AckIndicator status="sent" />);
+    expect(screen.getByLabelText("Enviada")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Entregue")).toBeNull();
+    expect(screen.queryByLabelText("Lida")).toBeNull();
+  });
+
+  it("delivered_at preenchido → entregue (2 ✓✓)", () => {
+    render(<AckIndicator status="sent" deliveredAt="2026-10-20T18:41:18.631Z" />);
+    expect(screen.getByLabelText("Entregue")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Enviada")).toBeNull();
+    expect(screen.queryByLabelText("Lida")).toBeNull();
+  });
+
+  it("read_at preenchido → lida (2 ✓✓ azuis)", () => {
+    render(<AckIndicator status="sent" readAt="2026-10-20T19:50:12.517Z" />);
+    const lida = screen.getByLabelText("Lida");
+    expect(lida).toBeInTheDocument();
+    expect(lida).toHaveClass("text-blue-400");
+    expect(screen.queryByLabelText("Enviada")).toBeNull();
+    expect(screen.queryByLabelText("Entregue")).toBeNull();
+  });
+
+  it("delivered_at + read_at preenchidos → prioridade para lida", () => {
+    render(
+      <AckIndicator
+        status="sent"
+        deliveredAt="2026-10-20T18:41:18.631Z"
+        readAt="2026-10-20T19:50:12.517Z"
+      />,
+    );
+    const lida = screen.getByLabelText("Lida");
+    expect(lida).toBeInTheDocument();
+    expect(lida).toHaveClass("text-blue-400");
+    expect(screen.queryByLabelText("Entregue")).toBeNull();
+    expect(screen.queryByLabelText("Enviada")).toBeNull();
+  });
+
+  it("comportamento antigo continua funcionando para outros canais/status sem timestamps", () => {
+    const { unmount } = render(<AckIndicator status="delivered" />);
+    expect(screen.getByLabelText("Entregue")).toBeInTheDocument();
+    unmount();
+
+    const { unmount: unmount2 } = render(<AckIndicator status="read" />);
+    expect(screen.getByLabelText("Lida")).toBeInTheDocument();
+    unmount2();
+
+    const { container } = render(<AckIndicator status="pending" />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("MessageBubble exibe status efetivo nos balões outbound reais", () => {
+    // Deusdete Santos: status 'sent', delivered_at preenchido -> deve mostrar Entregue
+    const { unmount } = render(
+      <MessageBubble
+        message={msg({
+          direction: "outbound",
+          status: "sent",
+          delivered_at: "2026-10-20T18:41:18.631Z",
+          read_at: null,
+        })}
+      />,
+    );
+    expect(screen.getByLabelText("Entregue")).toBeInTheDocument();
+    unmount();
+
+    // Surdo: status 'sent', delivered_at + read_at preenchidos -> deve mostrar Lida
+    render(
+      <MessageBubble
+        message={msg({
+          direction: "outbound",
+          status: "sent",
+          delivered_at: "2026-10-20T19:50:12.517Z",
+          read_at: "2026-10-20T19:50:12.517Z",
+        })}
+      />,
+    );
+    expect(screen.getByLabelText("Lida")).toBeInTheDocument();
   });
 });
