@@ -1,14 +1,24 @@
 /**
- * Detecção de respostas automáticas, bots, menus e mensagens de ausência/indisponibilidade
- * em conversas de prospecção.
+ * Detecção e classificação comportamental de automação em prospecção:
  *
- * Uma resposta identificada como automática:
- * - NÃO conta como resposta humana;
- * - NÃO qualifica o prospect;
- * - NÃO arme "Prospecção comercial — conversa interrompida";
- * - NÃO provoque follow-up enquanto estivermos aguardando atendimento humano;
- * - NÃO seja tratada como opt-out ou rejeição.
+ * NÍVEL 0 — Sem automação aparente (Atendimento humano normal).
+ * NÍVEL 1 — Resposta automática simples (ausência, horário, "retornaremos em breve", boas-vindas).
+ * NÍVEL 2 — Menu/chatbot básico (escolha de setor, opções 1-9, orçamento/financeiro/outros assuntos).
+ * NÍVEL 3 — Automação comercial aparente (coleta estruturada de dados, qualificação, agendamento por bot).
+ * NÍVEL 4 — Operação comercial madura (confirmada por humano: CRM + follow-up estruturado).
+ *
+ * REGRAS:
+ * 1. Resposta de bot nunca conta como resposta humana.
+ * 2. Bot nunca deve, sozinho, qualificar ou desqualificar definitivamente o prospect.
+ * 3. Não mover estágio por conclusão baseada apenas em mensagem automática.
+ * 4. Não armar "conversa interrompida" devido a interação somente com bot.
+ * 5. Não criar loops tentando atravessar chatbot (limite de 1 tentativa).
+ * 6. Se um bot bloquear fornecedores/parcerias, fazer no máximo 1 tentativa.
+ * 7. Se continuar bloqueando, encerrar sem insistência.
+ * 8. Se uma pessoa real recusar, respeitar imediatamente.
  */
+
+export type NivelAutomacao = 0 | 1 | 2 | 3;
 
 export function normalizarTexto(texto: string): string {
   return texto
@@ -17,63 +27,109 @@ export function normalizarTexto(texto: string): string {
     .replace(/[\u0300-\u036f]/gu, "");
 }
 
-export function ehRespostaAutomatica(texto: string | null | undefined): boolean {
+/**
+ * Detecta se a mensagem é um bloqueio automático a fornecedores ou parcerias.
+ */
+export function ehBloqueioDeFornecedor(texto: string | null | undefined): boolean {
   if (!texto || typeof texto !== "string") return false;
   const limpo = normalizarTexto(texto);
 
-  // 1. Ausência, indisponibilidade, retorno em breve ou fora de horário
-  if (
-    /nao estamos disponiveis|indisponivel|fora do horario|horario de atendimento|estamos ausentes/.test(
-      limpo,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /retornaremos.*breve|o mais breve possivel|assim que possivel retornaremos|logo retornaremos/.test(
-      limpo,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /deixe (seu nome|sua solicitacao|sua mensagem|seu recado)/.test(limpo)
-  ) {
-    return true;
-  }
-  if (
-    /agradece(mos)? (pelo |o |seu )?contato|obrigad[ao] pel[oe] (seu )?contato/.test(
-      limpo,
-    ) &&
-    /retornaremos|breve|atendimento|responder/.test(limpo)
-  ) {
-    return true;
-  }
-
-  // 2. Bots, chatbots, menus numéricos, seleção de setores ou mensagens automáticas declaradas
-  if (
-    /mensagem automatica|resposta automatica|atendimento automatico|atendimento eletronico|assistente virtual/.test(
-      limpo,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /(escolha|digite|selecione) uma opcao|(digite|envie) [1-9]|^\s*1\s*[-–.)]/m.test(
-      limpo,
-    )
-  ) {
-    return true;
-  }
-
-  // 3. Respostas de bots/respostas rápidas recusando fornecedores ou parcerias
-  if (
+  return (
     /nao (estamos )?(contratando|aceitando|recebendo|procurando) (novos? )?(fornecedor|fornecedores|parceir|parceria)|nao (temos|ha) interesse em (novos? )?(fornecedor|fornecedores|parceir|parceria)/.test(
       limpo,
+    ) ||
+    /nao aceitamos (propostas? de )?(fornecedor|parceria)|nao temos interesse em parcerias? ou fornecedores?/.test(
+      limpo,
     )
+  );
+}
+
+/**
+ * Classifica o nível de automação aparente da mensagem.
+ */
+export function classificarNivelAutomacao(texto: string | null | undefined): NivelAutomacao {
+  if (!texto || typeof texto !== "string") return 0;
+  const limpo = normalizarTexto(texto);
+
+  // NÍVEL 3 — Automação comercial aparente
+  // Coleta estruturada de informações para projeto/orçamento, qualificação automatizada, agendamento por bot
+  if (
+    /para (agilizar|iniciar|solicitar|montar|enviar) (o |seu )?orcamento/.test(limpo) ||
+    /qual (o |seu )?(tipo de movel|ambiente|prazo|cidade)|ja possui (projeto|medidas)/.test(limpo) ||
+    /informe (os seguintes dados|seu nome completo e (telefone|cidade)|os dados do projeto)/.test(limpo) ||
+    /(assistente virtual|bot).*(coletar|dados|orcamento|agendar|projeto)/.test(limpo) ||
+    /agendar (uma )?(visita|visita tecnica|atendimento presencial)/.test(limpo)
   ) {
-    return true;
+    return 3;
   }
 
-  return false;
+  // NÍVEL 2 — Menu / chatbot básico
+  // Roteamento por departamentos, opções numéricas, bot de triagem ou bloqueio a fornecedores
+  if (
+    /(escolha|digite|selecione) uma opcao|(digite|envie) [1-9]|^\s*1\s*[-–.)]/m.test(limpo) ||
+    ehBloqueioDeFornecedor(texto) ||
+    (/(comercial|vendas|orcamento|financeiro|rh|recursos humanos|atendimento|outros assuntos)/.test(limpo) &&
+      /(digite|opcao|setor|departamento|menu)/.test(limpo))
+  ) {
+    return 2;
+  }
+
+  // NÍVEL 1 — Resposta automática simples
+  // Ausência, horário de atendimento, retorno em breve, boas-vindas padronizadas
+  if (
+    /nao estamos disponiveis|indisponivel|fora do horario|horario de atendimento|estamos ausentes/.test(limpo) ||
+    /retornaremos.*breve|o mais breve possivel|assim que possivel retornaremos|logo retornaremos/.test(limpo) ||
+    /deixe (seu nome|sua solicitacao|sua mensagem|seu recado)/.test(limpo) ||
+    (/agradece(mos)? (pelo |o |seu )?contato|obrigad[ao] pel[oe] (seu )?contato/.test(limpo) &&
+      /retornaremos|breve|atendimento|responder/.test(limpo)) ||
+    /mensagem automatica|resposta automatica|atendimento automatico|atendimento eletronico|assistente virtual/.test(limpo)
+  ) {
+    return 1;
+  }
+
+  // NÍVEL 0 — Sem automação aparente (humano normal)
+  return 0;
+}
+
+/**
+ * Retorna true se a mensagem for identificada como automática (Níveis 1, 2 ou 3).
+ * Garante que respostas automáticas nunca contem como humanas nos guards e follow-ups.
+ */
+export function ehRespostaAutomatica(texto: string | null | undefined): boolean {
+  if (!texto || typeof texto !== "string") return false;
+  return classificarNivelAutomacao(texto) > 0 || ehBloqueioDeFornecedor(texto);
+}
+
+/**
+ * Detecta quantas tentativas o agente já realizou contra bots/menus sem resposta humana.
+ * Limite de segurança anti-loop: máximo 1 tentativa.
+ */
+export function contarTentativasContraBot(
+  mensagens: Array<{ direction: string; body?: string | null }>,
+): number {
+  let tentativas = 0;
+  for (let i = mensagens.length - 1; i >= 0; i--) {
+    const msg = mensagens[i];
+    if (!msg) continue;
+    // Se houve resposta humana real (Nível 0), zera o histórico de tentativas contra bot
+    if (msg.direction === "inbound" && !ehRespostaAutomatica(msg.body)) {
+      break;
+    }
+    if (msg.direction === "outbound") {
+      const limpo = normalizarTexto(msg.body || "");
+      if (
+        limpo.includes("nao e proposta de fornecimento") ||
+        limpo.includes("fornecimento") ||
+        limpo.includes("responsavel pelo atendimento") ||
+        limpo.includes("comercial") ||
+        limpo.includes("minha solicitacao e falar com") ||
+        limpo.includes("fico no aguardo quando estiverem disponiveis") ||
+        limpo.includes("quando puderem, fico a disposicao") ||
+        limpo.includes("outros assuntos")
+      ) {
+        tentativas++;
+      }
+    }
+  }
+  return tentativas;
 }

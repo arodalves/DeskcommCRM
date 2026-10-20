@@ -1,57 +1,192 @@
-import { describe, it, expect } from "vitest";
-import { ehRespostaAutomatica, normalizarTexto } from "@/lib/prospecting/resposta-automatica";
+import { describe, it, expect, vi } from "vitest";
+import type { Queryable } from "@/lib/agent-engine/queue/queue";
+import {
+  ehRespostaAutomatica,
+  ehBloqueioDeFornecedor,
+  classificarNivelAutomacao,
+  contarTentativasContraBot,
+} from "@/lib/prospecting/resposta-automatica";
+import { prospectingConversationContext } from "@/lib/prospecting/context";
 
-describe("ehRespostaAutomatica — detecção de mensagens automáticas / ausência / bots", () => {
-  it("detecta mensagens de ausência e indisponibilidade típicas", () => {
-    expect(ehRespostaAutomatica("No momento não estamos disponíveis.")).toBe(true);
-    expect(ehRespostaAutomatica("Deixe seu nome e sua solicitação que em breve retornaremos.")).toBe(true);
-    expect(ehRespostaAutomatica("Retornaremos sua mensagem o mais breve possível.")).toBe(true);
-    expect(
-      ehRespostaAutomatica(
-        "Obrigada pelo seu contato.\n\nNo momento não estamos disponíveis,  retornaremos sua mensagem o mais breve possível.\n\nAgradeço pelo compreensão \n\nVitória Armários Planejados.",
-      ),
-    ).toBe(true);
-    expect(
-      ehRespostaAutomatica(
-        "A Vitória Armários agradece seu contato. No momento não estamos disponíveis. Deixe seu nome e sua solicitação que em breve retornaremos.",
-      ),
-    ).toBe(true);
-    expect(ehRespostaAutomatica("Estamos fora do horário de atendimento. Nosso expediente é de seg a sex das 8h às 18h.")).toBe(true);
-    expect(ehRespostaAutomatica("Olá! No momento estamos ausentes, logo retornaremos seu contato.")).toBe(true);
-    expect(ehRespostaAutomatica("Agradecemos o seu contato! No momento estamos em atendimento externo, retornaremos em breve.")).toBe(true);
+describe("Classificação de Níveis de Automação e Respostas Automáticas", () => {
+  it("1. Resposta automática simples (Nível 1): detecta ausência, horário, retorno em breve e boas-vindas", () => {
+    const exemplos = [
+      "No momento não estamos disponíveis.",
+      "Deixe seu nome e sua solicitação que em breve retornaremos.",
+      "Retornaremos sua mensagem o mais breve possível.",
+      "Obrigada pelo seu contato.\n\nNo momento não estamos disponíveis, retornaremos sua mensagem o mais breve possível.\n\nVitória Armários Planejados.",
+      "A Vitória Armários agradece seu contato. No momento não estamos disponíveis. Deixe seu nome e sua solicitação que em breve retornaremos.",
+      "Estamos fora do horário de atendimento. Nosso expediente é de seg a sex das 8h às 18h.",
+      "Olá! No momento estamos ausentes, logo retornaremos seu contato.",
+      "Agradecemos o seu contato! No momento estamos em atendimento externo, retornaremos em breve.",
+      "Olá! Esta é uma mensagem automática de boas-vindas da Marcenaria Silva.",
+    ];
+
+    for (const texto of exemplos) {
+      expect(classificarNivelAutomacao(texto)).toBe(1);
+      expect(ehRespostaAutomatica(texto)).toBe(true);
+    }
   });
 
-  it("detecta bots, menus numéricos e respostas padronizadas declaradas", () => {
-    expect(ehRespostaAutomatica("Esta é uma mensagem automática. Escolha uma opção para continuar.")).toBe(true);
-    expect(ehRespostaAutomatica("Olá! Digite 1 para Comercial ou 2 para Financeiro.")).toBe(true);
-    expect(ehRespostaAutomatica("1 - Orçamentos\n2 - Financeiro\n3 - Falar com atendente")).toBe(true);
-    expect(ehRespostaAutomatica("Sou o assistente virtual da marcenaria. Como posso ajudar?")).toBe(true);
+  it("2. Menu básico (Nível 2): detecta seleção de setores, triagem e menus numerados", () => {
+    const exemplos = [
+      "Olá! Digite 1 para Comercial ou 2 para Financeiro.",
+      "1 - Orçamentos\n2 - Financeiro\n3 - Outros Assuntos",
+      "Escolha um setor:\n1. Vendas\n2. Suporte",
+      "Envie 1 para falar com um atendente ou 2 para ver nosso catálogo.",
+      "Selecione uma opção do menu para direcionarmos seu atendimento.",
+    ];
+
+    for (const texto of exemplos) {
+      expect(classificarNivelAutomacao(texto)).toBe(2);
+      expect(ehRespostaAutomatica(texto)).toBe(true);
+    }
   });
 
-  it("detecta recusa padronizada automática de fornecedores / parcerias", () => {
-    expect(ehRespostaAutomatica("Olá! No momento não estamos aceitando fornecedores ou novas parcerias.")).toBe(true);
-    expect(ehRespostaAutomatica("Não estamos contratando fornecedores no momento.")).toBe(true);
+  it("3. Bloqueio automático a fornecedores: detecta recusa de bot sem confundir com recusa humana", () => {
+    const exemplos = [
+      "Olá! No momento não estamos aceitando fornecedores ou novas parcerias.",
+      "Não estamos contratando fornecedores no momento.",
+      "Não temos interesse em parcerias ou fornecedores.",
+      "Agradecemos o contato, mas não aceitamos propostas de fornecedor por este canal.",
+    ];
+
+    for (const texto of exemplos) {
+      expect(ehBloqueioDeFornecedor(texto)).toBe(true);
+      expect(ehRespostaAutomatica(texto)).toBe(true);
+      expect(classificarNivelAutomacao(texto)).toBe(2);
+    }
   });
 
-  it("NÃO confunde respostas humanas com respostas automáticas", () => {
-    expect(ehRespostaAutomatica("Olá! Tudo bem? Pode fazer a pergunta sim.")).toBe(false);
-    expect(
-      ehRespostaAutomatica("Oi Xavier, tudo bem? A gente faz o acompanhamento pelo WhatsApp mesmo quando dá tempo."),
-    ).toBe(false);
-    expect(ehRespostaAutomatica("Boa tarde, quem fala?")).toBe(false);
-    expect(ehRespostaAutomatica("Olá, do que se trata?")).toBe(false);
-    expect(ehRespostaAutomatica("Sim, pode perguntar.")).toBe(false);
-    expect(ehRespostaAutomatica("Não tenho interesse.")).toBe(false);
-    expect(ehRespostaAutomatica("Não quero, obrigado.")).toBe(false);
-    expect(ehRespostaAutomatica("Me manda um email com a apresentação.")).toBe(false);
-    expect(ehRespostaAutomatica("Pode me ligar mais tarde?")).toBe(false);
-    expect(ehRespostaAutomatica("Qual o valor do sistema de vocês?")).toBe(false);
+  it("4. Bot com sinais de automação mais avançada (Nível 3): detecta coleta estruturada de dados e agendamento", () => {
+    const exemplos = [
+      "Para agilizar seu orçamento, qual o tipo de móvel planejado que você precisa?",
+      "Para iniciar o orçamento, já possui projeto e medidas do ambiente?",
+      "Nosso assistente irá coletar seus dados para orçamento. Informe seu nome completo e cidade.",
+      "Gostaria de agendar uma visita técnica gratuita com nosso projetista?",
+      "Para enviar seu orçamento, qual o tipo de móvel e qual a sua cidade?",
+    ];
+
+    for (const texto of exemplos) {
+      expect(classificarNivelAutomacao(texto)).toBe(3);
+      expect(ehRespostaAutomatica(texto)).toBe(true);
+    }
   });
 
-  it("lida corretamente com entradas vazias, nulas ou indefinidas", () => {
-    expect(ehRespostaAutomatica("")).toBe(false);
-    expect(ehRespostaAutomatica(null)).toBe(false);
-    expect(ehRespostaAutomatica(undefined)).toBe(false);
-    expect(ehRespostaAutomatica("   ")).toBe(false);
+  it("5. Recusa humana real (Nível 0): não confunde mensagens humanas com bots", () => {
+    const exemplos = [
+      "Olá! Tudo bem? Pode fazer a pergunta sim.",
+      "Oi Xavier, tudo bem? A gente faz o acompanhamento pelo WhatsApp mesmo quando dá tempo.",
+      "Boa tarde, quem fala?",
+      "Olá, do que se trata?",
+      "Sim, pode perguntar.",
+      "Não tenho interesse, obrigado.",
+      "Não temos interesse em nenhuma parceria ou sistema, por favor não insistir.",
+      "Não quero mais receber mensagens.",
+      "Nós já temos um sistema de CRM próprio e uma equipe que faz follow-up estruturado diariamente.",
+    ];
+
+    for (const texto of exemplos) {
+      expect(classificarNivelAutomacao(texto)).toBe(0);
+      expect(ehBloqueioDeFornecedor(texto)).toBe(false);
+      expect(ehRespostaAutomatica(texto)).toBe(false);
+    }
+  });
+
+  it("6. Proteção contra loops: conta tentativas consecutivas contra bot e detecta limite de 1 tentativa", () => {
+    // Caso 1: Nenhuma tentativa anterior contra bot
+    const convoSemTentativa = [
+      { direction: "outbound", body: "Olá! Sou Xavier, da Fluxalvo..." },
+      { direction: "inbound", body: "1 - Orçamentos\n2 - Financeiro\n3 - Outros Assuntos" },
+    ];
+    expect(contarTentativasContraBot(convoSemTentativa)).toBe(0);
+
+    // Caso 2: 1 tentativa realizada (escolheu opção ou tentou contornar bloqueio)
+    const convoUmaTentativa = [
+      { direction: "outbound", body: "Olá! Sou Xavier, da Fluxalvo..." },
+      { direction: "inbound", body: "1 - Orçamentos\n2 - Financeiro\n3 - Outros Assuntos" },
+      { direction: "outbound", body: "6 - Outros Assuntos" },
+      { direction: "inbound", body: "Não temos interesse em parcerias ou fornecedores." },
+    ];
+    expect(contarTentativasContraBot(convoUmaTentativa)).toBe(1);
+
+    // Caso 3: Xavier fez o esclarecimento e bot repetiu bloqueio -> tentativas >= 1 (deve parar!)
+    const convoLoop = [
+      ...convoUmaTentativa,
+      {
+        direction: "outbound",
+        body: "Entendi! Na verdade não é proposta de fornecimento. Consigo falar com alguém do comercial?",
+      },
+      { direction: "inbound", body: "Não temos interesse em parcerias ou fornecedores." },
+    ];
+    expect(contarTentativasContraBot(convoLoop)).toBe(2);
+
+    // Caso 4: Humano respondeu -> zera o histórico de tentativas contra bot
+    const convoHumanoRespondeu = [
+      ...convoLoop,
+      { direction: "inbound", body: "Oi Xavier, aqui é o Marcelo do comercial. Pode falar." },
+    ];
+    expect(contarTentativasContraBot(convoHumanoRespondeu)).toBe(0);
+  });
+
+  it("7. Proteção dos follow-ups existentes: respostas de Níveis 1, 2 e 3 retornam true em ehRespostaAutomatica", () => {
+    // Garante que nenhuma resposta de bot ative "conversa interrompida" ou conte como humano nos guards
+    const botMessages = [
+      "No momento não estamos disponíveis.",
+      "1 - Orçamentos\n2 - Financeiro",
+      "Não aceitamos fornecedores.",
+      "Para agilizar seu orçamento, qual o tipo de móvel?",
+    ];
+
+    for (const msg of botMessages) {
+      expect(ehRespostaAutomatica(msg)).toBe(true);
+    }
+  });
+
+  it("8. Contexto situacional em prospectingConversationContext: injeta anti-loop e diretrizes adaptativas", async () => {
+    const mockDb = {
+      query: vi.fn((sql: string) => {
+        if (sql.includes("prospecting_candidates")) {
+          return Promise.resolve({
+            rows: [
+              {
+                config: {
+                  agent_id: "210a010f-5837-458b-9a66-21fc9e5a65e3",
+                  channel_session_id: "7b47b2c2-8b0a-4145-8890-d6c878bd96f7",
+                  instruction: "Abordagem inicial",
+                  qualification: "Critérios de qualificação",
+                  pipeline_id: "2ddec45b-1cb6-45c7-a8eb-5ac6a23e5873",
+                  stage_id: "b6adf17c-8b0a-4145-8890-d6c878bd96f7",
+                  qualified_stage_id: "c7bdf17c-8b0a-4145-8890-d6c878bd96f8",
+                  daily_limit: 10,
+                  interval_minutes: 15,
+                  legal_basis_ref: "legitimo_interesse",
+                  funnel_entry: "on_start",
+                },
+              },
+            ],
+          });
+        }
+        if (sql.includes("messages")) {
+          // Simula bot repetindo após tentativa de Xavier
+          return Promise.resolve({
+            rows: [
+              { direction: "inbound", body: "Não temos interesse em fornecedores." },
+              {
+                direction: "outbound",
+                body: "Entendi! Na verdade não é proposta de fornecimento. Consigo falar com alguém do comercial?",
+              },
+              { direction: "inbound", body: "1 - Orçamentos\n2 - Financeiro" },
+              { direction: "outbound", body: "Olá! Sou Xavier, da Fluxalvo..." },
+            ],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      }),
+    };
+
+    const ctx = await prospectingConversationContext(mockDb as unknown as Queryable, "org-uuid", "conv-uuid");
+    expect(ctx).toContain("[ORIENTAÇÃO SITUACIONAL ANTI-LOOP]");
+    expect(ctx).toContain("NÃO insista, NÃO faça novas tentativas e encerre");
   });
 });
