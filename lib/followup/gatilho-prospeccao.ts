@@ -14,6 +14,7 @@ import { triggerConfigSchema } from "./api-schemas";
 import { enrollFollowupFlow } from "./enroll";
 import { adicionarDiasUteis } from "@/lib/prospecting/business-days";
 import { checarExclusaoDeProspeccao } from "@/lib/prospecting/exclusions";
+import { ehRespostaAutomatica } from "@/lib/prospecting/resposta-automatica";
 
 export const EVENTO_PROSPECCAO_ACEITE_INICIAL = "prospecting.initial_outbound_accepted";
 export const EVENTO_PROSPECCAO_CONVERSA_INTERROMPIDA = "prospecting.conversation_interrupted";
@@ -398,17 +399,25 @@ export async function aplicaGatilhoConversaInterrompida(
     return summary;
   }
 
-  // 4. Evidência estrutural: prospect respondeu pelo menos uma vez antes desta mensagem
+  // 4. Evidência estrutural: prospect respondeu pelo menos uma vez antes desta mensagem com resposta humana
   const { data: priorInbounds } = await deps.admin
     .from("messages")
-    .select("id, created_at")
+    .select("id, created_at, body")
     .eq("organization_id", row.organization_id)
     .eq("conversation_id", payload.conversation_id)
     .eq("direction", "inbound")
     .gt("created_at", candidate.provider_accepted_at)
-    .limit(1);
+    .limit(10);
 
   if (!priorInbounds || priorInbounds.length === 0) {
+    summary.skipped_existing++;
+    return summary;
+  }
+
+  const temRespostaHumana = priorInbounds.some(
+    (msg) => !ehRespostaAutomatica(msg.body as string | null | undefined),
+  );
+  if (!temRespostaHumana) {
     summary.skipped_existing++;
     return summary;
   }
@@ -573,18 +582,22 @@ export async function verificarEEmitirConversaInterrompida(
     activation_timestamp: string | null;
   };
 
-  // 2. Verificar se o prospect respondeu pelo menos uma vez antes desta mensagem
+  // 2. Verificar se o prospect respondeu pelo menos uma vez antes desta mensagem com resposta humana
   const inboundsRes = await db.query(
-    `SELECT 1 FROM public.messages
+    `SELECT body FROM public.messages
      WHERE organization_id = $1
        AND conversation_id = $2
        AND direction = 'inbound'
-       AND created_at > $3
-     LIMIT 1`,
+       AND created_at > $3`,
     [tenantId, conversationId, cand.provider_accepted_at],
   );
 
   if (inboundsRes.rows.length === 0) return false;
+
+  const temRespostaHumana = inboundsRes.rows.some(
+    (row) => !ehRespostaAutomatica(row.body as string | null | undefined),
+  );
+  if (!temRespostaHumana) return false;
 
   // 3. Emitir evento durável de conversa interrompida
   const nowIso = new Date().toISOString();

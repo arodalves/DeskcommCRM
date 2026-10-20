@@ -1302,4 +1302,286 @@ describe("Suite de Testes — Prospecção Comercial: Conversa Interrompida", ()
       EVENTO_PROSPECCAO_CONVERSA_INTERROMPIDA,
     );
   });
+
+  it("13. verificarEEmitirConversaInterrompida: não emite se as respostas forem apenas automáticas/ausência", async () => {
+    let emittedCount = 0;
+
+    const mockDb = {
+      query: vi.fn((sql: string) => {
+        if (sql.includes("prospecting_candidates")) {
+          return Promise.resolve({
+            rows: [
+              {
+                id: CANDIDATE_ID,
+                campaign_id: CAMPAIGN_ID,
+                lead_id: null,
+                contact_id: CONTACT_ID,
+                provider_accepted_at: "2026-10-19T12:00:00.000Z",
+                activation_version: 1,
+                activation_timestamp: ACTIVATION_TIME,
+              },
+            ],
+          });
+        }
+        if (sql.includes("messages")) {
+          // Apenas mensagens automáticas recebidas
+          return Promise.resolve({
+            rows: [
+              { body: "No momento não estamos disponíveis, retornaremos em breve." },
+              { body: "Deixe seu nome e sua solicitação que em breve retornaremos." },
+            ],
+          });
+        }
+        if (sql.includes("emit_event")) {
+          emittedCount++;
+          return Promise.resolve({ rows: [{ emit_event: "event-uuid-1" }] });
+        }
+        return Promise.resolve({ rows: [] });
+      }),
+    };
+
+    const emitido = await verificarEEmitirConversaInterrompida(mockDb, {
+      tenantId: ORG_ID,
+      conversationId: CONVERSATION_ID,
+      contactId: CONTACT_ID,
+      agentId: "agent-xavier",
+      lastMessageId: MSG_ID,
+    });
+
+    expect(emitido).toBe(false);
+    expect(emittedCount).toBe(0);
+  });
+
+  it("14. aplicaGatilhoConversaInterrompida: ignora se houver apenas respostas automáticas", async () => {
+    let enrolled = 0;
+    const admin = {
+      from: vi.fn((table: string) => {
+        if (table === "prospecting_campaigns") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: {
+                id: CAMPAIGN_ID,
+                status: "running",
+                activated_at: ACTIVATION_TIME,
+                activation_version: 1,
+              },
+            }),
+          };
+        }
+        if (table === "prospecting_candidates") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: {
+                id: CANDIDATE_ID,
+                status: "sent",
+                provider_accepted_at: "2026-10-19T12:00:00.000Z",
+                conversation_id: CONVERSATION_ID,
+                contact_id: CONTACT_ID,
+                campaign_id: CAMPAIGN_ID,
+              },
+            }),
+          };
+        }
+        if (table === "messages") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            gt: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockResolvedValue({
+              data: [
+                {
+                  id: "msg-auto-1",
+                  created_at: "2026-10-19T15:00:00.000Z",
+                  body: "No momento não estamos disponíveis. Retornaremos sua mensagem o mais breve possível.",
+                },
+              ],
+              error: null,
+            }),
+          };
+        }
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          maybeSingle: vi.fn().mockResolvedValue({ data: null }),
+        };
+      }),
+    };
+
+    const row: EventRow = {
+      id: "evt-auto-1",
+      organization_id: ORG_ID,
+      event_type: EVENTO_PROSPECCAO_CONVERSA_INTERROMPIDA,
+      entity_kind: "prospecting_candidate",
+      entity_id: CANDIDATE_ID,
+      payload: {
+        candidate_id: CANDIDATE_ID,
+        campaign_id: CAMPAIGN_ID,
+        contact_id: CONTACT_ID,
+        conversation_id: CONVERSATION_ID,
+        message_id: MSG_ID,
+        sent_at: BASE_TIME,
+        activation_version: 1,
+      },
+      metadata: {},
+      consumed_by: [],
+      attempts: 0,
+      created_at: BASE_TIME,
+    };
+
+    const res = await aplicaGatilhoConversaInterrompida(
+      { admin: admin as unknown as SupabaseClient, clock: () => new Date(BASE_TIME) },
+      row,
+    );
+
+    expect(res.matched).toBe(true);
+    expect(res.enrolled).toBe(0);
+    expect(res.skipped_existing).toBe(1);
+  });
+
+  it("15. assertProspectingFollowupPreconditions: cancela se o prospect tiver apenas respostas automáticas", async () => {
+    const mockAdmin = {
+      from: vi.fn((table: string) => {
+        if (table === "followup_enrollments") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: {
+                id: "enr-1",
+                organization_id: ORG_ID,
+                contact_id: CONTACT_ID,
+                conversation_id: CONVERSATION_ID,
+                status: "active",
+                pointer_id: POINTER_ID,
+                prospecting_candidate_id: CANDIDATE_ID,
+                prospecting_campaign_id: CAMPAIGN_ID,
+                prospecting_accepted_at: "2026-10-19T12:00:00.000Z",
+                prospecting_last_outbound_at: BASE_TIME,
+                started_at: BASE_TIME,
+              },
+              error: null,
+            }),
+          };
+        }
+        if (table === "followup_flow_pointers") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: {
+                name: "Prospecção comercial — conversa interrompida",
+                trigger_config: { kind: "prospecting_conversation_interrupted" },
+              },
+              error: null,
+            }),
+          };
+        }
+        if (table === "prospecting_candidates") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: {
+                id: CANDIDATE_ID,
+                organization_id: ORG_ID,
+                campaign_id: CAMPAIGN_ID,
+                contact_id: CONTACT_ID,
+                conversation_id: CONVERSATION_ID,
+                status: "sent",
+                provider_accepted_at: "2026-10-19T12:00:00.000Z",
+                activation_version: 1,
+              },
+              error: null,
+            }),
+          };
+        }
+        if (table === "prospecting_exclusions") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            in: vi.fn().mockReturnThis(),
+            or: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+            then: (resolve: (val: { data: unknown[]; error: null }) => unknown) =>
+              resolve({ data: [], error: null }),
+          };
+        }
+        if (table === "prospecting_campaigns") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: { status: "running", activated_at: ACTIVATION_TIME, activation_version: 1 },
+              error: null,
+            }),
+          };
+        }
+        if (table === "contacts") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: { is_blocked: false, force_human: false, is_anonymized: false, consent: {} },
+              error: null,
+            }),
+          };
+        }
+        if (table === "conversations") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: {
+                status: "open",
+                last_inbound_at: "2026-10-19T13:00:00.000Z",
+                assigned_to_user_id: null,
+                bot_silenced_until: null,
+              },
+              error: null,
+            }),
+          };
+        }
+        if (table === "messages") {
+          return {
+            select: vi.fn().mockReturnThis(),
+            eq: vi.fn().mockReturnThis(),
+            gt: vi.fn().mockReturnThis(),
+            limit: vi.fn().mockResolvedValue({
+              data: [
+                {
+                  id: "msg-auto-1",
+                  created_at: "2026-10-19T13:00:00.000Z",
+                  body: "No momento não estamos disponíveis. Deixe seu nome e sua solicitação.",
+                },
+              ],
+              error: null,
+            }),
+          };
+        }
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+        };
+      }),
+    } as unknown as SupabaseClient;
+
+    const check = await assertProspectingFollowupPreconditions(mockAdmin, {
+      organizationId: ORG_ID,
+      enrollmentId: "enr-1",
+      candidateId: CANDIDATE_ID,
+      isConversaInterrompida: true,
+    });
+
+    expect(check.ok).toBe(false);
+    if (!check.ok) {
+      expect(check.terminal).toBe(true);
+      expect(check.reason).toContain("apenas automática/ausência");
+    }
+  });
 });

@@ -5,6 +5,7 @@ import {
 } from "@/lib/agent-engine/guardrails/lgpd/legal-basis";
 import { ProspectingError } from "./provider";
 import { checarExclusaoDeProspeccao } from "./exclusions";
+import { ehRespostaAutomatica } from "./resposta-automatica";
 
 export interface ProspectingDelivery {
   organizationId: string;
@@ -342,18 +343,25 @@ export async function assertProspectingFollowupPreconditions(
   }
 
   if (isConversaInterrompida) {
-    // 1. Prospect deve ter respondido pelo menos uma vez antes do follow-up
+    // 1. Prospect deve ter respondido pelo menos uma vez antes do follow-up com resposta humana
     const { data: previousInbound } = await db
       .from("messages")
-      .select("id, created_at")
+      .select("id, created_at, body")
       .eq("organization_id", organizationId)
       .eq("conversation_id", candidate.conversation_id)
       .eq("direction", "inbound")
       .gt("created_at", candidate.provider_accepted_at)
-      .limit(1);
+      .limit(10);
 
     if (!previousInbound || previousInbound.length === 0) {
       return { ok: false, reason: "Prospect nunca respondeu à abordagem inicial.", terminal: true };
+    }
+
+    const temRespostaHumana = previousInbound.some(
+      (msg) => !ehRespostaAutomatica(msg.body as string | null | undefined),
+    );
+    if (!temRespostaHumana) {
+      return { ok: false, reason: "Prospect não respondeu com mensagem humana (apenas automática/ausência).", terminal: true };
     }
 
     // 2. Prospect NÃO pode ter respondido APÓS a mensagem que originou este follow-up
