@@ -197,8 +197,7 @@ describe("sincronizarPrimeiroContatoSeElegivel (Avanço Determinístico para 'J�
       { getLeadState, applyState, mirror },
     );
 
-    expect(res.moveu).toBe(false);
-    expect(res.motivo).toBe("estagio_ja_avancado");
+    expect(res).toMatchObject({ moveu: false, motivo: "estagio_ja_avancado" });
     expect(applyState).not.toHaveBeenCalled();
     expect(mirror).not.toHaveBeenCalled();
   });

@@ -11,6 +11,7 @@ import {
   listPipelineStagesTool,
   searchLeadsTool,
   setHumanServiceTool,
+  upsertLeadContactTool,
 } from "@/lib/mcp/chatgpt/tools";
 import type { McpContext } from "@/lib/mcp/types";
 
@@ -35,7 +36,7 @@ function mockCtx(supabaseMock: unknown): McpContext {
 }
 
 describe("ChatGPT MCP Tools - Catálogo e Configuração", () => {
-  it("expõe exatamente as 10 ferramentas operacionais solicitadas", () => {
+  it("expõe exatamente as 11 ferramentas operacionais solicitadas", () => {
     const toolNames = chatGptTools.map((t) => t.name);
     expect(toolNames).toEqual([
       "search_leads",
@@ -48,6 +49,7 @@ describe("ChatGPT MCP Tools - Catálogo e Configuração", () => {
       "get_contact_automation_status",
       "assign_agent",
       "list_pipeline_stages",
+      "upsert_lead_contact",
     ]);
   });
 });
@@ -798,6 +800,419 @@ describe("ChatGPT MCP Tools - list_pipeline_stages", () => {
     expect(res.pipelines[0]?.name).toBe("Comercial");
     expect(res.pipelines[0]?.stages.length).toBe(2);
     expect(res.pipelines[0]?.stages[0]?.name).toBe("Novo");
+  });
+});
+
+describe("ChatGPT MCP Tools - upsert_lead_contact", () => {
+  it("atualiza telefone e normaliza para E.164 preservando force_human=true e dados existentes", async () => {
+    let updatedPatch: Record<string, unknown> | null = null;
+    let activityEmitted = false;
+
+    const currentContact = {
+      id: CONTACT_ID,
+      name: "Dr. Roberto",
+      display_name: "Dr. Roberto",
+      phone_number: "+5531988888888",
+      email: "roberto@exemplo.com",
+      force_human: true,
+      is_blocked: false,
+    };
+
+    const supabaseMock = {
+      from: vi.fn((table: string) => {
+        if (table === "crm_leads") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: {
+                      id: LEAD_ID,
+                      contact_id: CONTACT_ID,
+                      organization_id: ORG_ID,
+                      stage_id: STAGE_ID,
+                      pipeline_id: PIPELINE_ID,
+                      title: "Lead Dr. Roberto",
+                    },
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === "contacts") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: currentContact }),
+                  single: async () => ({
+                    data: {
+                      ...currentContact,
+                      phone_number: "+5531999999999",
+                    },
+                  }),
+                }),
+                in: () => ({
+                  neq: () => ({
+                    limit: () => ({
+                      maybeSingle: async () => ({ data: null }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+            update: (patch: Record<string, unknown>) => {
+              updatedPatch = patch;
+              return {
+                eq: () => ({
+                  eq: async () => ({ error: null }),
+                }),
+              };
+            },
+          };
+        }
+        if (table === "conversations") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: async () => ({
+                  data: [{ status: "open", assignee_kind: "user", bot_silenced_until: "infinity" }],
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === "crm_lead_activities") {
+          return {
+            insert: async () => {
+              activityEmitted = true;
+              return { error: null };
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    const ctx = mockCtx(supabaseMock);
+    const res = (await upsertLeadContactTool.handler(
+      {
+        lead_id: LEAD_ID,
+        contact_phone: "31999999999",
+      },
+      ctx,
+    )) as Record<string, unknown>;
+
+    expect(res["action"]).toBe("updated");
+    expect(res["lead_id"]).toBe(LEAD_ID);
+    expect(res["contact_id"]).toBe(CONTACT_ID);
+    expect(res["phone_number"]).toBe("+5531999999999");
+    expect(res["force_human"]).toBe(true);
+    expect(res["can_xavier_respond"]).toBe(false);
+    expect(updatedPatch).toEqual({ phone_number: "+5531999999999" });
+    expect(activityEmitted).toBe(true);
+  });
+
+  it("impede duplicação de telefone na mesma organização se outro contato já o possui", async () => {
+    const OTHER_CONTACT_ID = "00000000-0000-4000-8000-000000000099";
+    const currentContact = {
+      id: CONTACT_ID,
+      name: "Dr. Roberto",
+      phone_number: "+5531988888888",
+      email: "roberto@exemplo.com",
+      force_human: false,
+      is_blocked: false,
+    };
+
+    const supabaseMock = {
+      from: vi.fn((table: string) => {
+        if (table === "crm_leads") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: {
+                      id: LEAD_ID,
+                      contact_id: CONTACT_ID,
+                      organization_id: ORG_ID,
+                    },
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === "contacts") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: currentContact }),
+                }),
+                in: () => ({
+                  neq: () => ({
+                    limit: () => ({
+                      maybeSingle: async () => ({ data: { id: OTHER_CONTACT_ID } }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {};
+      }),
+    };
+
+    const ctx = mockCtx(supabaseMock);
+    await expect(
+      upsertLeadContactTool.handler(
+        {
+          lead_id: LEAD_ID,
+          contact_phone: "+5531999999999",
+        },
+        ctx,
+      ),
+    ).rejects.toThrow(/já pertence a outro contato/);
+  });
+
+  it("vincula contato existente pelo telefone quando o lead não possui contact_id", async () => {
+    let linkedContactId: string | null = null;
+    const EXISTING_CONTACT_ID = "00000000-0000-4000-8000-000000000055";
+    const existingContact = {
+      id: EXISTING_CONTACT_ID,
+      name: "Dra. Caroline Oliveira",
+      display_name: "Dra. Caroline Oliveira",
+      phone_number: "+5531977777777",
+      email: "caroline@exemplo.com",
+      force_human: true,
+      is_blocked: false,
+    };
+
+    const supabaseMock = {
+      from: vi.fn((table: string) => {
+        if (table === "crm_leads") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: {
+                      id: LEAD_ID,
+                      contact_id: null,
+                      organization_id: ORG_ID,
+                      stage_id: STAGE_ID,
+                      title: "Dra. Caroline Oliveira",
+                    },
+                  }),
+                }),
+              }),
+            }),
+            update: (patch: { contact_id: string }) => {
+              linkedContactId = patch.contact_id;
+              return {
+                eq: () => ({
+                  eq: async () => ({ error: null }),
+                }),
+              };
+            },
+          };
+        }
+        if (table === "contacts") {
+          return {
+            select: () => {
+              const chain: Record<string, unknown> = {};
+              chain.eq = () => chain;
+              chain.in = () => chain;
+              chain.limit = () => chain;
+              chain.maybeSingle = async () => ({ data: existingContact });
+              chain.single = async () => ({ data: existingContact });
+              return chain;
+            },
+          };
+        }
+        if (table === "conversations") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: async () => ({ data: [] }),
+              }),
+            }),
+          };
+        }
+        if (table === "crm_lead_activities") {
+          return {
+            insert: async () => ({ error: null }),
+          };
+        }
+        return {};
+      }),
+    };
+
+    const ctx = mockCtx(supabaseMock);
+    const res = (await upsertLeadContactTool.handler(
+      {
+        lead_id: LEAD_ID,
+        contact_phone: "+5531977777777",
+      },
+      ctx,
+    )) as Record<string, unknown>;
+
+    expect(res["action"]).toBe("linked_existing");
+    expect(res["contact_id"]).toBe(EXISTING_CONTACT_ID);
+    expect(linkedContactId).toBe(EXISTING_CONTACT_ID);
+    expect(res["force_human"]).toBe(true);
+    expect(res["can_xavier_respond"]).toBe(false);
+  });
+
+  it("cria e vincula novo contato quando o lead não possui contact_id e telefone não existe", async () => {
+    let createdContact: Record<string, unknown> | null = null;
+    let linkedContactId: string | null = null;
+    const NEW_CONTACT_ID = "00000000-0000-4000-8000-000000000077";
+
+    const supabaseMock = {
+      from: vi.fn((table: string) => {
+        if (table === "crm_leads") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: {
+                      id: LEAD_ID,
+                      contact_id: null,
+                      organization_id: ORG_ID,
+                      stage_id: STAGE_ID,
+                      title: "Lead Novo",
+                    },
+                  }),
+                }),
+              }),
+            }),
+            update: (patch: { contact_id: string }) => {
+              linkedContactId = patch.contact_id;
+              return {
+                eq: () => ({
+                  eq: async () => ({ error: null }),
+                }),
+              };
+            },
+          };
+        }
+        if (table === "contacts") {
+          return {
+            select: () => {
+              const chain: Record<string, unknown> = {};
+              chain.eq = () => chain;
+              chain.in = () => chain;
+              chain.limit = () => chain;
+              chain.maybeSingle = async () => ({ data: null });
+              chain.single = async () => ({
+                data: {
+                  id: NEW_CONTACT_ID,
+                  name: "Novo Cliente",
+                  display_name: "Novo Cliente",
+                  phone_number: "+5531966666666",
+                  email: "novo@exemplo.com",
+                  force_human: false,
+                  is_blocked: false,
+                },
+              });
+              return chain;
+            },
+            insert: (payload: Record<string, unknown>) => {
+              createdContact = payload;
+              return {
+                select: () => ({
+                  single: async () => ({
+                    data: {
+                      id: NEW_CONTACT_ID,
+                      name: payload["name"],
+                      display_name: payload["name"],
+                      phone_number: payload["phone_number"],
+                      email: payload["email"],
+                      force_human: false,
+                      is_blocked: false,
+                    },
+                  }),
+                }),
+              };
+            },
+          };
+        }
+        if (table === "conversations") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: async () => ({ data: [] }),
+              }),
+            }),
+          };
+        }
+        if (table === "crm_lead_activities") {
+          return {
+            insert: async () => ({ error: null }),
+          };
+        }
+        return {};
+      }),
+    };
+
+    const ctx = mockCtx(supabaseMock);
+    const res = (await upsertLeadContactTool.handler(
+      {
+        lead_id: LEAD_ID,
+        contact_name: "Novo Cliente",
+        contact_phone: "(31) 96666-6666",
+        contact_email: "novo@exemplo.com",
+      },
+      ctx,
+    )) as Record<string, unknown>;
+
+    expect(res["action"]).toBe("created_and_linked");
+    expect(res["contact_id"]).toBe(NEW_CONTACT_ID);
+    expect(linkedContactId).toBe(NEW_CONTACT_ID);
+    expect(createdContact).toMatchObject({
+      organization_id: ORG_ID,
+      name: "Novo Cliente",
+      phone_number: "+5531966666666",
+      email: "novo@exemplo.com",
+      source: "mcp_chatgpt",
+    });
+    expect(res["force_human"]).toBe(false);
+    expect(res["can_xavier_respond"]).toBe(true);
+  });
+
+  it("respeita isolamento por organização rejeitando lead de outro tenant", async () => {
+    const supabaseMock = {
+      from: vi.fn((table: string) => {
+        if (table === "crm_leads") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: null }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {};
+      }),
+    };
+
+    const ctx = mockCtx(supabaseMock);
+    await expect(
+      upsertLeadContactTool.handler(
+        {
+          lead_id: LEAD_ID,
+          contact_name: "Invasor",
+        },
+        ctx,
+      ),
+    ).rejects.toThrow("Lead não encontrado nesta organização.");
   });
 });
 

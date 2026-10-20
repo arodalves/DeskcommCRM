@@ -784,13 +784,13 @@ describe("OAuth 2.1 — Resolução de Identidade e Permissões no Servidor MCP"
     expect(() => ensureScope(scopes, "mcp:write")).toThrow(/Token missing required scope 'mcp:write'/);
   });
 
-  it("preserva o catálogo das 10 ferramentas do ChatGPT sem ampliação indevida de permissões", () => {
-    expect(chatGptTools.length).toBe(10);
+  it("preserva o catálogo das 11 ferramentas do ChatGPT sem ampliação indevida de permissões", () => {
+    expect(chatGptTools.length).toBe(11);
     const readTools = chatGptTools.filter((t) => t.category === "read");
     const writeTools = chatGptTools.filter((t) => t.category === "write");
 
     expect(readTools.length).toBe(4);
-    expect(writeTools.length).toBe(6);
+    expect(writeTools.length).toBe(7);
 
     for (const rt of readTools) {
       expect(rt.requiresScope).toBe("mcp:read");
@@ -938,7 +938,7 @@ describe("OAuth 2.1 — Verificações Específicas de Segurança e Conformidade
     const readScopes = ["mcp:read"];
     const writeTools = chatGptTools.filter((t) => t.category === "write");
 
-    expect(writeTools.length).toBe(6);
+    expect(writeTools.length).toBe(7);
 
     for (const tool of writeTools) {
       expect(tool.requiresScope).toBe("mcp:write");

@@ -13,7 +13,8 @@ import {
   moveLeadHandler,
   updateLeadHandler,
 } from "@/app/api/v1/leads/_handler";
-import { canonicalPhoneBR, phoneLookupVariants } from "@/lib/channels/phone-variants";
+import { audit } from "@/lib/audit";
+import { canonicalPhoneBR, normalizePhoneBR, phoneLookupVariants } from "@/lib/channels/phone-variants";
 import { silencioVigente } from "@/lib/inbox/comando-da-conversa";
 import { emitLeadActivity } from "@/lib/leads/activity-emitter";
 import type { McpToolDefinition } from "@/lib/mcp/types";
@@ -1087,6 +1088,352 @@ export const listPipelineStagesTool: McpToolDefinition<typeof listPipelineStages
   },
 };
 
+// ---------------------------------------------------------------------------
+// 11. upsert_lead_contact
+// ---------------------------------------------------------------------------
+const upsertLeadContactInputShape = {
+  lead_id: z.string().uuid().describe("UUID do lead existente no CRM"),
+  contact_name: z.string().max(200).optional().describe("Nome do contato"),
+  contact_phone: z
+    .string()
+    .max(40)
+    .optional()
+    .describe("Telefone do contato (ex: +5531999999999 ou 31999999999)"),
+  contact_email: z.string().email().optional().describe("E-mail do contato"),
+};
+
+export const upsertLeadContactTool: McpToolDefinition<typeof upsertLeadContactInputShape> = {
+  name: "upsert_lead_contact",
+  description:
+    "Atualiza com segurança os dados do contato associado a um lead existente ou vincula/cria um contato " +
+    "sem duplicar cadastros, sem criar novos leads e sem alterar estágio, automação ou atendimento humano.",
+  inputSchema: upsertLeadContactInputShape,
+  category: "write",
+  requiresRole: "agent",
+  requiresScope: "mcp:write",
+  handler: async (input, ctx) => {
+    // 1. Localiza o lead na organização atual
+    const { data: lead, error: leadErr } = await ctx.supabase
+      .from("crm_leads")
+      .select("id, contact_id, organization_id, stage_id, pipeline_id, title")
+      .eq("id", input.lead_id)
+      .eq("organization_id", ctx.organizationId)
+      .maybeSingle();
+
+    if (leadErr) throw new Error(`Erro ao buscar lead: ${leadErr.message}`);
+    if (!lead) throw new Error("Lead não encontrado nesta organização.");
+
+    let targetContactId: string;
+    let action: "updated" | "linked_existing" | "created_and_linked";
+    const changedFields: string[] = [];
+
+    // 2. Se o lead já tiver contact_id vinculado
+    if (lead.contact_id) {
+      const { data: currentContact, error: ctErr } = await ctx.supabase
+        .from("contacts")
+        .select("id, name, display_name, phone_number, email, force_human, is_blocked")
+        .eq("id", lead.contact_id)
+        .eq("organization_id", ctx.organizationId)
+        .maybeSingle();
+
+      if (ctErr || !currentContact) {
+        throw new Error("Contato associado ao lead não foi encontrado nesta organização.");
+      }
+
+      targetContactId = currentContact.id;
+      action = "updated";
+      const patch: Record<string, unknown> = {};
+
+      // Atualiza nome se fornecido
+      if (input.contact_name !== undefined && input.contact_name.trim() !== "") {
+        const newName = input.contact_name.trim();
+        if (newName !== currentContact.name) {
+          patch.name = newName;
+          changedFields.push("name");
+        }
+      }
+
+      // Atualiza telefone se fornecido (normalizado E.164 com prevenção de duplicidade)
+      if (input.contact_phone !== undefined && input.contact_phone.trim() !== "") {
+        const normalized = normalizePhoneBR(input.contact_phone) ?? canonicalPhoneBR(input.contact_phone);
+        if (normalized !== currentContact.phone_number) {
+          const variants = phoneLookupVariants(normalized);
+          const { data: duplicateContact } = await ctx.supabase
+            .from("contacts")
+            .select("id")
+            .eq("organization_id", ctx.organizationId)
+            .in("phone_number", variants)
+            .neq("id", currentContact.id)
+            .limit(1)
+            .maybeSingle();
+
+          if (duplicateContact?.id) {
+            throw new Error(
+              `Não é possível atualizar o telefone: o número ${normalized} já pertence a outro contato (ID: ${duplicateContact.id}) nesta organização.`
+            );
+          }
+
+          patch.phone_number = normalized;
+          changedFields.push("phone_number");
+        }
+      }
+
+      // Atualiza e-mail se fornecido
+      if (input.contact_email !== undefined && input.contact_email.trim() !== "") {
+        const newEmail = input.contact_email.trim().toLowerCase();
+        if (newEmail !== (currentContact.email ?? "").toLowerCase()) {
+          patch.email = newEmail;
+          changedFields.push("email");
+        }
+      }
+
+      if (Object.keys(patch).length > 0) {
+        const { error: updErr } = await ctx.supabase
+          .from("contacts")
+          .update(patch)
+          .eq("id", currentContact.id)
+          .eq("organization_id", ctx.organizationId);
+
+        if (updErr) throw new Error(`Falha ao atualizar dados do contato: ${updErr.message}`);
+      }
+    } else {
+      // 3. Se o lead NÃO tiver contact_id
+      const rawPhone = input.contact_phone?.trim();
+      const rawEmail = input.contact_email?.trim().toLowerCase();
+      const rawName = input.contact_name?.trim();
+
+      if (rawPhone) {
+        const normalized = normalizePhoneBR(rawPhone) ?? canonicalPhoneBR(rawPhone);
+        const variants = phoneLookupVariants(normalized);
+
+        const { data: existingContact } = await ctx.supabase
+          .from("contacts")
+          .select("id, name, display_name, phone_number, email, force_human, is_blocked")
+          .eq("organization_id", ctx.organizationId)
+          .in("phone_number", variants)
+          .limit(1)
+          .maybeSingle();
+
+        if (existingContact?.id) {
+          targetContactId = existingContact.id;
+          action = "linked_existing";
+
+          // Enriquecimento seguro se campos faltavam no contato existente
+          const patch: Record<string, unknown> = {};
+          if (rawName && !existingContact.name) {
+            patch.name = rawName;
+            changedFields.push("name");
+          }
+          if (rawEmail && !existingContact.email) {
+            patch.email = rawEmail;
+            changedFields.push("email");
+          }
+          if (Object.keys(patch).length > 0) {
+            await ctx.supabase
+              .from("contacts")
+              .update(patch)
+              .eq("id", existingContact.id)
+              .eq("organization_id", ctx.organizationId);
+          }
+        } else {
+          // Não encontrou por telefone: cria novo contato
+          const newName = rawName || lead.title;
+          const { data: newContact, error: insErr } = await ctx.supabase
+            .from("contacts")
+            .insert({
+              organization_id: ctx.organizationId,
+              name: newName,
+              phone_number: normalized,
+              email: rawEmail || null,
+              source: "mcp_chatgpt",
+            })
+            .select("id, name, display_name, phone_number, email, force_human, is_blocked")
+            .single();
+
+          if (insErr) {
+            if (insErr.code === "23505") {
+              const { data: conflictContact } = await ctx.supabase
+                .from("contacts")
+                .select("id, name, display_name, phone_number, email, force_human, is_blocked")
+                .eq("organization_id", ctx.organizationId)
+                .in("phone_number", variants)
+                .limit(1)
+                .maybeSingle();
+              if (conflictContact?.id) {
+                targetContactId = conflictContact.id;
+                action = "linked_existing";
+              } else {
+                throw new Error(`Falha ao criar contato: ${insErr.message}`);
+              }
+            } else {
+              throw new Error(`Falha ao criar contato: ${insErr.message}`);
+            }
+          } else if (newContact?.id) {
+            targetContactId = newContact.id;
+            action = "created_and_linked";
+            changedFields.push("name", "phone_number");
+            if (rawEmail) changedFields.push("email");
+          } else {
+            throw new Error("Falha inesperada ao obter ID do contato criado.");
+          }
+        }
+      } else {
+        // Sem telefone: verifica se há nome ou e-mail suficiente
+        if (!rawName && !rawEmail) {
+          throw new Error(
+            "Para vincular ou criar contato em lead sem contato associado, informe pelo menos telefone, nome ou e-mail."
+          );
+        }
+
+        let existingByEmail: {
+          id: string;
+          name: string | null;
+          display_name: string | null;
+          phone_number: string | null;
+          email: string | null;
+          force_human: boolean | null;
+          is_blocked: boolean | null;
+        } | null = null;
+
+        if (rawEmail) {
+          const { data: ctByEmail } = await ctx.supabase
+            .from("contacts")
+            .select("id, name, display_name, phone_number, email, force_human, is_blocked")
+            .eq("organization_id", ctx.organizationId)
+            .eq("email", rawEmail)
+            .limit(1)
+            .maybeSingle();
+          existingByEmail = ctByEmail;
+        }
+
+        if (existingByEmail?.id) {
+          targetContactId = existingByEmail.id;
+          action = "linked_existing";
+          if (rawName && !existingByEmail.name) {
+            await ctx.supabase
+              .from("contacts")
+              .update({ name: rawName })
+              .eq("id", existingByEmail.id)
+              .eq("organization_id", ctx.organizationId);
+            changedFields.push("name");
+          }
+        } else {
+          const newName = rawName || lead.title;
+          const { data: newContact, error: insErr } = await ctx.supabase
+            .from("contacts")
+            .insert({
+              organization_id: ctx.organizationId,
+              name: newName,
+              email: rawEmail || null,
+              source: "mcp_chatgpt",
+            })
+            .select("id, name, display_name, phone_number, email, force_human, is_blocked")
+            .single();
+
+          if (insErr) throw new Error(`Falha ao criar contato: ${insErr.message}`);
+          if (!newContact?.id) throw new Error("Falha inesperada ao criar contato.");
+
+          targetContactId = newContact.id;
+          action = "created_and_linked";
+          changedFields.push("name");
+          if (rawEmail) changedFields.push("email");
+        }
+      }
+
+      // Vincula o contato ao lead
+      const { error: linkErr } = await ctx.supabase
+        .from("crm_leads")
+        .update({ contact_id: targetContactId })
+        .eq("id", lead.id)
+        .eq("organization_id", ctx.organizationId);
+
+      if (linkErr) throw new Error(`Falha ao vincular contato ao lead: ${linkErr.message}`);
+    }
+
+    // 4. Busca o contato final para retorno estruturado
+    const { data: finalContact, error: finalErr } = await ctx.supabase
+      .from("contacts")
+      .select("id, name, display_name, phone_number, email, force_human, is_blocked")
+      .eq("id", targetContactId)
+      .eq("organization_id", ctx.organizationId)
+      .single();
+
+    if (finalErr || !finalContact) {
+      throw new Error("Erro ao obter registro final do contato.");
+    }
+
+    // 5. Calcula can_xavier_respond com segurança
+    const { data: convs } = await ctx.supabase
+      .from("conversations")
+      .select("status, assignee_kind, bot_silenced_until")
+      .eq("contact_id", targetContactId)
+      .eq("organization_id", ctx.organizationId);
+
+    const agora = new Date();
+    const hasSilencedConv = (convs ?? []).some(
+      (c: { bot_silenced_until: string | null }) => silencioVigente(c.bot_silenced_until, agora).vigente,
+    );
+    const hasHumanAssignee = (convs ?? []).some(
+      (c: { assignee_kind: string | null }) => c.assignee_kind === "user",
+    );
+    const isForceHuman = finalContact.force_human === true;
+    const isBlocked = finalContact.is_blocked === true;
+    const canXavierRespond = !isForceHuman && !isBlocked && !hasSilencedConv && !hasHumanAssignee;
+
+    // 6. Auditoria (timeline do lead e audit log)
+    const reasonText =
+      action === "updated"
+        ? `Contato atualizado via MCP: ${changedFields.join(", ") || "sem alterações"}`
+        : action === "linked_existing"
+        ? `Contato existente (${targetContactId}) vinculado ao lead via MCP`
+        : `Novo contato criado e vinculado ao lead via MCP`;
+
+    await emitLeadActivity(ctx.supabase, {
+      organizationId: ctx.organizationId,
+      leadId: input.lead_id,
+      contactId: targetContactId,
+      type: "lead_edited",
+      sourceModule: "mcp_chatgpt",
+      actor: ctx.actor,
+      reason: reasonText,
+      payload: {
+        action,
+        changed_fields: changedFields,
+        contact_id: targetContactId,
+      },
+    });
+
+    void audit({
+      action: "lead.updated",
+      organizationId: ctx.organizationId,
+      actorUserId: ctx.actor.type === "user" ? ctx.actor.id : null,
+      actorApiTokenId: ctx.apiTokenId,
+      resourceType: "crm_lead",
+      resourceId: input.lead_id,
+      requestId: ctx.requestId,
+      metadata: {
+        action,
+        contact_id: targetContactId,
+        changed_fields: changedFields,
+        source: "mcp_upsert_lead_contact",
+      },
+    });
+
+    // 7. Retorno estruturado conforme especificado
+    return {
+      lead_id: input.lead_id,
+      contact_id: finalContact.id,
+      action,
+      contact_name: finalContact.name ?? finalContact.display_name,
+      phone_number: finalContact.phone_number,
+      email: finalContact.email,
+      force_human: isForceHuman,
+      can_xavier_respond: canXavierRespond,
+      changed_fields: changedFields,
+    };
+  },
+};
+
 export const chatGptTools: ReadonlyArray<McpToolDefinition> = [
   searchLeadsTool,
   getLeadTool,
@@ -1098,4 +1445,5 @@ export const chatGptTools: ReadonlyArray<McpToolDefinition> = [
   getContactAutomationStatusTool,
   assignAgentTool,
   listPipelineStagesTool,
+  upsertLeadContactTool,
 ] as unknown as ReadonlyArray<McpToolDefinition>;
