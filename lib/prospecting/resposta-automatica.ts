@@ -35,10 +35,10 @@ export function ehBloqueioDeFornecedor(texto: string | null | undefined): boolea
   const limpo = normalizarTexto(texto);
 
   return (
-    /nao (estamos )?(contratando|aceitando|recebendo|procurando) (novos? )?(fornecedor|fornecedores|parceir|parceria)|nao (temos|ha) interesse em (novos? )?(fornecedor|fornecedores|parceir|parceria)/.test(
+    /nao (estamos )?(contratando|aceitando|recebendo|procurando|aceitamos) (novos? )?(fornecedor|fornecedores|parceir|parceria|parcerias)|nao (temos|ha) interesse em (novos? )?(fornecedor|fornecedores|parceir|parceria|parcerias)/.test(
       limpo,
     ) ||
-    /nao aceitamos (propostas? de )?(fornecedor|parceria)|nao temos interesse em parcerias? ou fornecedores?/.test(
+    /nao aceitamos (propostas? (de |com )?)?(novos? )?(fornecedor|fornecedores|parceir|parceria|parcerias)|nao temos interesse em (novos? )?(parceir|parceria|parcerias|fornecedor|fornecedores)/.test(
       limpo,
     )
   );

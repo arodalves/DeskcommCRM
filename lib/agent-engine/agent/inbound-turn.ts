@@ -5410,6 +5410,28 @@ async function executarTurnoDoAgente(
     const sentOutcomes = outcomes.filter((o) => o.kind === 'sent' || o.kind === 'already_sent');
     if (sentOutcomes.length > 0 && !preview) {
       try {
+        const { sincronizarPrimeiroContatoSeElegivel } = await import(
+          './avanco-primeiro-contato'
+        );
+        await sincronizarPrimeiroContatoSeElegivel({
+          pool,
+          crmCfg: deps.crmCfg,
+          tenantId,
+          leadId,
+          jobId: liveJob().id,
+          messages: effectiveContext.messages,
+          outcomes: sentOutcomes,
+          ...(agentConfig !== null ? { pipelineIds: agentConfig.pipelineIds } : {}),
+          log: runLog,
+          preview,
+        });
+      } catch (syncErr) {
+        runLog.warn('avanço determinístico de primeiro contato falhou (best-effort)', {
+          error: syncErr instanceof Error ? syncErr.message : String(syncErr),
+        });
+      }
+
+      try {
         const { verificarEEmitirConversaInterrompida } = await import(
           '@/lib/followup/gatilho-prospeccao'
         );
