@@ -14,10 +14,13 @@ import {
   updateLeadHandler,
 } from "@/app/api/v1/leads/_handler";
 import { audit } from "@/lib/audit";
+import { beginServiceAtOrigin } from "@/lib/atendimento/origem";
 import { canonicalPhoneBR, normalizePhoneBR, phoneLookupVariants } from "@/lib/channels/phone-variants";
 import { silencioVigente } from "@/lib/inbox/comando-da-conversa";
 import { emitLeadActivity } from "@/lib/leads/activity-emitter";
 import type { McpToolDefinition } from "@/lib/mcp/types";
+import { checarExclusaoDeProspeccao } from "@/lib/prospecting/exclusions";
+import type { CampaignConfig } from "@/lib/prospecting/schema";
 
 // ---------------------------------------------------------------------------
 // 1. search_leads
@@ -1434,6 +1437,643 @@ export const upsertLeadContactTool: McpToolDefinition<typeof upsertLeadContactIn
   },
 };
 
+// ---------------------------------------------------------------------------
+// 12. enroll_leads_in_prospecting_campaign
+// ---------------------------------------------------------------------------
+const enrollLeadsInProspectingCampaignInputShape = {
+  lead_ids: z
+    .array(z.string().uuid("Cada lead_id deve ser um UUID válido."))
+    .min(1, "Pelo menos um lead_id deve ser informado.")
+    .describe("Lista de UUIDs dos leads existentes a serem inscritos na campanha de prospecção"),
+  campaign_id: z
+    .string()
+    .uuid("campaign_id deve ser um UUID válido.")
+    .optional()
+    .describe("UUID da campanha de prospecção (opcional se campaign_name for informado)"),
+  campaign_name: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe("Nome da campanha de prospecção (opcional se campaign_id for informado)"),
+  release_for_xavier: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "Autorização explícita para liberar force_human e dessilenciar o Xavier para os leads elegíveis inscritos",
+    ),
+};
+
+export const enrollLeadsInProspectingCampaignTool: McpToolDefinition<
+  typeof enrollLeadsInProspectingCampaignInputShape
+> = {
+  name: "enroll_leads_in_prospecting_campaign",
+  description:
+    "Inscreve leads existentes em uma campanha de prospecção automatizada do Xavier sem criar leads duplicados e sem contornar as proteções comerciais. Respeita filas, horários, ritmo, exclusões e opt-outs.",
+  inputSchema: enrollLeadsInProspectingCampaignInputShape,
+  category: "write",
+  requiresRole: "agent",
+  requiresScope: "mcp:write",
+  handler: async (input, ctx) => {
+    if (!input.campaign_id && !input.campaign_name) {
+      throw new Error("Informe campaign_id ou campaign_name.");
+    }
+
+    let campaign: {
+      id: string;
+      name: string;
+      status: string;
+      config: CampaignConfig | null;
+      organization_id: string;
+    } | null = null;
+
+    if (input.campaign_id) {
+      const { data: c, error: cErr } = await ctx.supabase
+        .from("prospecting_campaigns")
+        .select("id, name, status, config, organization_id")
+        .eq("id", input.campaign_id)
+        .eq("organization_id", ctx.organizationId)
+        .maybeSingle();
+
+      if (cErr || !c) {
+        throw new Error(`Campanha de prospecção não encontrada pelo ID: ${input.campaign_id}`);
+      }
+      campaign = c;
+    } else if (input.campaign_name) {
+      const qName = input.campaign_name.trim();
+      const { data: matched, error: mErr } = await ctx.supabase
+        .from("prospecting_campaigns")
+        .select("id, name, status, config, organization_id")
+        .eq("organization_id", ctx.organizationId)
+        .ilike("name", `%${qName}%`);
+
+      if (mErr || !matched || matched.length === 0) {
+        throw new Error(`Nenhuma campanha de prospecção encontrada com o nome: "${qName}"`);
+      }
+
+      const exact = matched.find(
+        (c: { name: string }) => c.name.toLowerCase() === qName.toLowerCase(),
+      );
+      if (exact) {
+        campaign = exact;
+      } else if (matched.length === 1) {
+        campaign = matched[0]!;
+      } else {
+        const candidateNames = matched
+          .map((c: { name: string; id: string }) => `"${c.name}" (${c.id})`)
+          .join(", ");
+        throw new Error(
+          `Nome de campanha ambíguo. Foram encontradas ${matched.length} campanhas candidatas: [${candidateNames}]. Especifique o campaign_id ou o nome exato.`,
+        );
+      }
+    }
+
+    if (!campaign) {
+      throw new Error("Campanha de prospecção não pôde ser resolvida.");
+    }
+
+    const config = campaign.config as CampaignConfig | null;
+    if (!config || !config.agent_id || !config.channel_session_id) {
+      throw new Error("A campanha de prospecção não possui configuração válida de agente ou canal.");
+    }
+
+    const results: Array<{
+      lead_id: string;
+      lead_title: string;
+      contact_id: string | null;
+      phone_number: string | null;
+      result: "enrolled" | "already_enrolled" | "requires_xavier_release" | "rejected";
+      reason: string;
+      force_human_before: boolean;
+      force_human_after: boolean;
+      queued: boolean;
+      message_sent: false;
+    }> = [];
+
+    let enrolledCount = 0;
+    let alreadyEnrolledCount = 0;
+    let rejectedCount = 0;
+    let requiresReleaseCount = 0;
+
+    const PROTECTED_MANUAL_TAGS = [
+      "abordagem-site-inicial",
+      "prospeccao-manual",
+      "aguardando site para abordagem",
+    ];
+
+    for (const leadId of input.lead_ids) {
+      // 1. Busca lead
+      const { data: lead, error: leadErr } = await ctx.supabase
+        .from("crm_leads")
+        .select("id, title, status, lost_reason, contact_id, pipeline_id, stage_id, tags")
+        .eq("id", leadId)
+        .eq("organization_id", ctx.organizationId)
+        .maybeSingle();
+
+      if (leadErr || !lead) {
+        results.push({
+          lead_id: leadId,
+          lead_title: "Desconhecido",
+          contact_id: null,
+          phone_number: null,
+          result: "rejected",
+          reason: "Lead não encontrado na organização atual.",
+          force_human_before: false,
+          force_human_after: false,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      // 2. Contato associado
+      if (!lead.contact_id) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: null,
+          phone_number: null,
+          result: "rejected",
+          reason: "Lead não possui contato associado.",
+          force_human_before: false,
+          force_human_after: false,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      const { data: contact, error: contactErr } = await ctx.supabase
+        .from("contacts")
+        .select(
+          "id, name, display_name, phone_number, is_blocked, force_human, ai_opt_out, is_anonymized, consent, tags",
+        )
+        .eq("id", lead.contact_id)
+        .eq("organization_id", ctx.organizationId)
+        .maybeSingle();
+
+      if (contactErr || !contact) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: lead.contact_id,
+          phone_number: null,
+          result: "rejected",
+          reason: "Contato associado não encontrado na organização.",
+          force_human_before: false,
+          force_human_after: false,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      const isForceHuman = contact.force_human === true;
+
+      // 3. Telefone válido
+      const rawPhone = contact.phone_number?.trim();
+      const normalizedPhone = rawPhone
+        ? canonicalPhoneBR(rawPhone) || normalizePhoneBR(rawPhone)
+        : null;
+      if (!normalizedPhone) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: rawPhone || null,
+          result: "rejected",
+          reason: "Contato não possui telefone brasileiro válido.",
+          force_human_before: isForceHuman,
+          force_human_after: isForceHuman,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      // 4. Tags de pré-site / abordagem manual
+      const leadTags = Array.isArray(lead.tags) ? lead.tags : [];
+      const contactTags = Array.isArray(contact.tags) ? contact.tags : [];
+      const combinedTags = [...leadTags, ...contactTags];
+
+      const foundProtectedTag = combinedTags.find((t) => {
+        if (typeof t !== "string") return false;
+        return PROTECTED_MANUAL_TAGS.includes(t.toLowerCase().trim());
+      });
+
+      if (foundProtectedTag) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: normalizedPhone,
+          result: "rejected",
+          reason: `Lead possui tag de proteção manual/pré-site: "${foundProtectedTag}". Abordagem automatizada proibida.`,
+          force_human_before: isForceHuman,
+          force_human_after: isForceHuman,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      // 5. Exclusões estruturais e 7 leads manuais protegidos
+      const exclusao = await checarExclusaoDeProspeccao(ctx.supabase, {
+        organizationId: ctx.organizationId,
+        leadId: lead.id,
+        contactId: contact.id,
+        phone: normalizedPhone,
+        title: lead.title,
+      });
+
+      if (exclusao.excluido) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: normalizedPhone,
+          result: "rejected",
+          reason: exclusao.motivo || "Lead ou contato protegido contra abordagem de prospecção.",
+          force_human_before: isForceHuman,
+          force_human_after: isForceHuman,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      // 6. Contato bloqueado
+      if (contact.is_blocked === true) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: normalizedPhone,
+          result: "rejected",
+          reason: "Contato está bloqueado no sistema.",
+          force_human_before: isForceHuman,
+          force_human_after: isForceHuman,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      // 7. Opt-out
+      const marketing = contact.consent?.marketing as
+        | { declined_at?: unknown; opt_out?: unknown }
+        | undefined;
+      const hasOptOut = Boolean(
+        marketing?.declined_at || marketing?.opt_out || contact.ai_opt_out === true,
+      );
+      if (hasOptOut) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: normalizedPhone,
+          result: "rejected",
+          reason: "Contato registrou opt-out de mensagens ou recusa permanente de IA.",
+          force_human_before: isForceHuman,
+          force_human_after: isForceHuman,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      // 8. Perda definitiva
+      const isLostDefinitive = lead.status === "lost" || lead.lost_reason !== null;
+      if (isLostDefinitive) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: normalizedPhone,
+          result: "rejected",
+          reason: `Lead encerrado como perda definitiva no CRM (${lead.lost_reason || "status lost"}).`,
+          force_human_before: isForceHuman,
+          force_human_after: isForceHuman,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      // 9. Atendimento humano ativo incompatível
+      const { data: convs } = await ctx.supabase
+        .from("conversations")
+        .select("id, status, assignee_kind, assigned_to_user_id, bot_silenced_until")
+        .eq("contact_id", contact.id)
+        .eq("organization_id", ctx.organizationId);
+
+      const hasActiveHumanHandoff = (convs ?? []).some(
+        (c: {
+          assigned_to_user_id: string | null;
+          assignee_kind: string | null;
+          status: string;
+        }) => c.status === "open" && (c.assigned_to_user_id !== null || c.assignee_kind === "user"),
+      );
+
+      if (hasActiveHumanHandoff) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: normalizedPhone,
+          result: "rejected",
+          reason: "Contato em atendimento humano ativo incompatível com prospecção.",
+          force_human_before: isForceHuman,
+          force_human_after: isForceHuman,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      // 10. Já inscrito nesta campanha (Idempotência)
+      const placeId = `lead:${lead.id}`;
+      const { data: existingInSame } = await ctx.supabase
+        .from("prospecting_candidates")
+        .select("id, status, place_id, phone, campaign_id")
+        .eq("organization_id", ctx.organizationId)
+        .eq("campaign_id", campaign.id)
+        .or(
+          `lead_id.eq.${lead.id},contact_id.eq.${contact.id},place_id.eq.${placeId},phone.eq.${normalizedPhone}`,
+        )
+        .maybeSingle();
+
+      if (existingInSame) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: normalizedPhone,
+          result: "already_enrolled",
+          reason: `Lead já inscrito nesta campanha (candidato ${existingInSame.id}, status: ${existingInSame.status}).`,
+          force_human_before: isForceHuman,
+          force_human_after: isForceHuman,
+          queued: false,
+          message_sent: false,
+        });
+        alreadyEnrolledCount++;
+        continue;
+      }
+
+      // 11. Já inscrito em outra campanha ativa/na fila (Deduplicação)
+      const { data: existingInOther } = await ctx.supabase
+        .from("prospecting_candidates")
+        .select("id, status, campaign_id")
+        .eq("organization_id", ctx.organizationId)
+        .neq("campaign_id", campaign.id)
+        .in("status", ["new", "queued", "sending", "sent"])
+        .or(`lead_id.eq.${lead.id},contact_id.eq.${contact.id},phone.eq.${normalizedPhone}`)
+        .maybeSingle();
+
+      if (existingInOther) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: normalizedPhone,
+          result: "rejected",
+          reason: `Telefone/contato já vinculado a outra campanha de prospecção da organização (${existingInOther.campaign_id}).`,
+          force_human_before: isForceHuman,
+          force_human_after: isForceHuman,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      // 12. release_for_xavier
+      let forceHumanAfter = isForceHuman;
+
+      if (isForceHuman && !input.release_for_xavier) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: normalizedPhone,
+          result: "requires_xavier_release",
+          reason:
+            "Contato protegido com force_human=true. Requer release_for_xavier=true para autorizar a automação.",
+          force_human_before: true,
+          force_human_after: true,
+          queued: false,
+          message_sent: false,
+        });
+        requiresReleaseCount++;
+        continue;
+      }
+
+      if (isForceHuman && input.release_for_xavier) {
+        const { error: updErr } = await ctx.supabase
+          .from("contacts")
+          .update({ force_human: false })
+          .eq("id", contact.id)
+          .eq("organization_id", ctx.organizationId)
+          .eq("ai_opt_out", false);
+
+        if (updErr) {
+          throw new Error(`Falha ao remover force_human do contato: ${updErr.message}`);
+        }
+
+        await ctx.supabase
+          .from("conversations")
+          .update({ bot_silenced_until: null })
+          .eq("contact_id", contact.id)
+          .eq("organization_id", ctx.organizationId);
+
+        forceHumanAfter = false;
+
+        void audit({
+          action: "contact.updated",
+          organizationId: ctx.organizationId,
+          actorUserId: ctx.actor.type === "user" ? ctx.actor.id : null,
+          actorApiTokenId: ctx.apiTokenId,
+          resourceType: "contact",
+          resourceId: contact.id,
+          requestId: ctx.requestId,
+          metadata: {
+            field: "force_human",
+            force_human: false,
+            lead_id: lead.id,
+            campaign_id: campaign.id,
+            campaign_name: campaign.name,
+            reason: "release_for_xavier via MCP enroll_leads_in_prospecting_campaign",
+          },
+        });
+      }
+
+      // 13. Inscrição na campanha
+      let boundary: unknown = null;
+      let conversationId: string | null = null;
+
+      try {
+        boundary = await beginServiceAtOrigin(
+          ctx.supabase,
+          ctx.organizationId,
+          contact.id,
+          config.channel_session_id,
+        );
+        conversationId = (boundary as { conversation_id?: string })?.conversation_id ?? null;
+      } catch {
+        const { data: convFallback } = await ctx.supabase
+          .from("conversations")
+          .select("id")
+          .eq("contact_id", contact.id)
+          .eq("organization_id", ctx.organizationId)
+          .maybeSingle();
+        conversationId = convFallback?.id ?? null;
+      }
+
+      if (conversationId) {
+        const { data: convData } = await ctx.supabase
+          .from("conversations")
+          .select("metadata")
+          .eq("id", conversationId)
+          .eq("organization_id", ctx.organizationId)
+          .maybeSingle();
+
+        const prevMetadata =
+          convData?.metadata && typeof convData.metadata === "object" ? convData.metadata : {};
+
+        await ctx.supabase
+          .from("conversations")
+          .update({
+            active_ai_agent_id: config.agent_id,
+            metadata: {
+              ...prevMetadata,
+              prospecting_campaign_id: campaign.id,
+            },
+          })
+          .eq("id", conversationId)
+          .eq("organization_id", ctx.organizationId);
+      }
+
+      const candidateStatus = campaign.status === "draft" ? "new" : "queued";
+      const candidateData = {
+        key: placeId,
+        name: lead.title,
+        phone: normalizedPhone,
+        lead_id: lead.id,
+        contact_id: contact.id,
+      };
+
+      const { data: insertedCandidate, error: insErr } = await ctx.supabase
+        .from("prospecting_candidates")
+        .insert({
+          organization_id: ctx.organizationId,
+          campaign_id: campaign.id,
+          place_id: placeId,
+          phone: normalizedPhone,
+          data: candidateData,
+          status: candidateStatus,
+          contact_id: contact.id,
+          lead_id: lead.id,
+          conversation_id: conversationId,
+          service_boundary: boundary,
+          selected: true,
+        })
+        .select("id, status")
+        .single();
+
+      if (insErr) {
+        results.push({
+          lead_id: lead.id,
+          lead_title: lead.title,
+          contact_id: contact.id,
+          phone_number: normalizedPhone,
+          result: "rejected",
+          reason: `Falha ao inserir candidato na campanha: ${insErr.message}`,
+          force_human_before: isForceHuman,
+          force_human_after: forceHumanAfter,
+          queued: false,
+          message_sent: false,
+        });
+        rejectedCount++;
+        continue;
+      }
+
+      await emitLeadActivity(ctx.supabase, {
+        organizationId: ctx.organizationId,
+        leadId: lead.id,
+        contactId: contact.id,
+        type: "lead_edited",
+        sourceModule: "mcp_chatgpt",
+        actor: ctx.actor,
+        reason: `Inscrito na campanha de prospecção "${campaign.name}" via MCP`,
+        payload: {
+          campaign_id: campaign.id,
+          campaign_name: campaign.name,
+          candidate_id: insertedCandidate.id,
+          status: candidateStatus,
+          release_for_xavier: input.release_for_xavier && isForceHuman,
+        },
+      });
+
+      void audit({
+        action: "lead.updated",
+        organizationId: ctx.organizationId,
+        actorUserId: ctx.actor.type === "user" ? ctx.actor.id : null,
+        actorApiTokenId: ctx.apiTokenId,
+        resourceType: "crm_lead",
+        resourceId: lead.id,
+        requestId: ctx.requestId,
+        metadata: {
+          event: "candidate_enrolled",
+          campaign_id: campaign.id,
+          campaign_name: campaign.name,
+          candidate_id: insertedCandidate.id,
+          lead_id: lead.id,
+          contact_id: contact.id,
+          phone: normalizedPhone,
+          status: candidateStatus,
+          released_for_xavier: input.release_for_xavier && isForceHuman,
+        },
+      });
+
+      results.push({
+        lead_id: lead.id,
+        lead_title: lead.title,
+        contact_id: contact.id,
+        phone_number: normalizedPhone,
+        result: "enrolled",
+        reason: `Inscrito com sucesso na fila da campanha "${campaign.name}".`,
+        force_human_before: isForceHuman,
+        force_human_after: forceHumanAfter,
+        queued: true,
+        message_sent: false,
+      });
+      enrolledCount++;
+    }
+
+    return {
+      campaign_id: campaign.id,
+      campaign_name: campaign.name,
+      total_requested: input.lead_ids.length,
+      enrolled: enrolledCount,
+      already_enrolled: alreadyEnrolledCount,
+      rejected: rejectedCount,
+      requires_xavier_release: requiresReleaseCount,
+      results,
+    };
+  },
+};
+
 export const chatGptTools: ReadonlyArray<McpToolDefinition> = [
   searchLeadsTool,
   getLeadTool,
@@ -1446,4 +2086,5 @@ export const chatGptTools: ReadonlyArray<McpToolDefinition> = [
   assignAgentTool,
   listPipelineStagesTool,
   upsertLeadContactTool,
+  enrollLeadsInProspectingCampaignTool,
 ] as unknown as ReadonlyArray<McpToolDefinition>;

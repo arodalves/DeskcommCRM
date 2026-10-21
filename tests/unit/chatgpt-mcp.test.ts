@@ -12,6 +12,7 @@ import {
   searchLeadsTool,
   setHumanServiceTool,
   upsertLeadContactTool,
+  enrollLeadsInProspectingCampaignTool,
 } from "@/lib/mcp/chatgpt/tools";
 import type { McpContext } from "@/lib/mcp/types";
 
@@ -36,7 +37,7 @@ function mockCtx(supabaseMock: unknown): McpContext {
 }
 
 describe("ChatGPT MCP Tools - Catálogo e Configuração", () => {
-  it("expõe exatamente as 11 ferramentas operacionais solicitadas", () => {
+  it("expõe exatamente as 12 ferramentas operacionais solicitadas", () => {
     const toolNames = chatGptTools.map((t) => t.name);
     expect(toolNames).toEqual([
       "search_leads",
@@ -50,6 +51,7 @@ describe("ChatGPT MCP Tools - Catálogo e Configuração", () => {
       "assign_agent",
       "list_pipeline_stages",
       "upsert_lead_contact",
+      "enroll_leads_in_prospecting_campaign",
     ]);
   });
 });
@@ -1213,6 +1215,767 @@ describe("ChatGPT MCP Tools - upsert_lead_contact", () => {
         ctx,
       ),
     ).rejects.toThrow("Lead não encontrado nesta organização.");
+  });
+});
+
+describe("ChatGPT MCP Tools - enroll_leads_in_prospecting_campaign", () => {
+  const CAMPAIGN_ID = "00000000-0000-4000-8000-000000000010";
+  const LEAD_ID_2 = "00000000-0000-4000-8000-000000000020";
+  const CONTACT_ID_2 = "00000000-0000-4000-8000-000000000030";
+
+  function createProspectingMock(opts: {
+    campaign?: {
+      id?: string;
+      name?: string;
+      status?: string;
+      config?: unknown;
+      organization_id?: string;
+    } | null;
+    campaignsList?: Array<{
+      id: string;
+      name: string;
+      status: string;
+      config: unknown;
+      organization_id: string;
+    }>;
+    leads?: Record<string, unknown>;
+    contacts?: Record<string, unknown>;
+    candidates?: Array<{
+      id: string;
+      campaign_id: string;
+      lead_id?: string;
+      contact_id?: string;
+      phone?: string;
+      place_id?: string;
+      status: string;
+    }>;
+    conversations?: Array<unknown>;
+  }) {
+    const defaultCampaign = {
+      id: CAMPAIGN_ID,
+      name: "Campanha Teste Odonto",
+      status: "running",
+      config: {
+        agent_id: AGENT_ID,
+        channel_session_id: "00000000-0000-4000-8000-000000000099",
+        pipeline_id: PIPELINE_ID,
+        stage_id: STAGE_ID,
+        qualified_stage_id: STAGE_ID_2,
+        daily_limit: 10,
+        interval_minutes: 15,
+        legal_basis_ref: "Consentimento",
+      },
+      organization_id: ORG_ID,
+      ...opts.campaign,
+    };
+
+    const insertedCandidates: Array<Record<string, unknown>> = [];
+    const updatedContacts: Array<Record<string, unknown>> = [];
+    const updatedConvs: Array<Record<string, unknown>> = [];
+
+    const mockDb = {
+      insertedCandidates,
+      updatedContacts,
+      updatedConvs,
+    };
+
+    const supabaseMock = {
+      rpc: vi.fn(async (proc: string) => {
+        if (proc === "fn_service_begin") {
+          return {
+            data: {
+              organization_id: ORG_ID,
+              contact_id: CONTACT_ID,
+              conversation_id: "conv-mock-1",
+              status: "open",
+              demanda_fechada_em: null,
+            },
+            error: null,
+          };
+        }
+        return { data: null, error: null };
+      }),
+      from: vi.fn((table: string) => {
+        if (table === "prospecting_campaigns") {
+          const makeCampaignQuery = () => {
+            let filterOrgId: string | null = null;
+            let filterId: string | null = null;
+
+            const qObj = {
+              eq: (f: string, val: string) => {
+                if (f === "id") filterId = val;
+                if (f === "organization_id") filterOrgId = val;
+                return qObj;
+              },
+              ilike: (_f: string, q: string) => {
+                const search = (q || "").replace(/%/g, "").toLowerCase();
+                const list = opts.campaignsList ?? [defaultCampaign];
+                const matched = list.filter((c) => c.name.toLowerCase().includes(search));
+                return Promise.resolve({
+                  data: matched,
+                  error: null,
+                });
+              },
+              maybeSingle: async () => {
+                if (opts.campaign === null) return { data: null, error: null };
+                if (filterId && filterId !== defaultCampaign.id) return { data: null, error: null };
+                if (filterOrgId && filterOrgId !== defaultCampaign.organization_id) return { data: null, error: null };
+                return { data: defaultCampaign, error: null };
+              },
+            };
+            return qObj;
+          };
+
+          return {
+            select: () => makeCampaignQuery(),
+          };
+        }
+
+        if (table === "crm_leads") {
+          return {
+            select: () => ({
+              eq: (_f1: string, leadIdVal: string) => ({
+                eq: (_f2: string, orgIdVal: string) => ({
+                  maybeSingle: async () => {
+                    if (orgIdVal !== ORG_ID) return { data: null, error: null };
+                    const found = (opts.leads ?? {})[leadIdVal];
+                    if (found) return { data: found, error: null };
+                    if (leadIdVal === LEAD_ID) {
+                      return {
+                        data: {
+                          id: LEAD_ID,
+                          title: "Clínica Sorriso",
+                          status: "open",
+                          lost_reason: null,
+                          contact_id: CONTACT_ID,
+                          pipeline_id: PIPELINE_ID,
+                          stage_id: STAGE_ID,
+                          tags: [],
+                        },
+                        error: null,
+                      };
+                    }
+                    if (leadIdVal === LEAD_ID_2) {
+                      return {
+                        data: {
+                          id: LEAD_ID_2,
+                          title: "Clínica Harmonia",
+                          status: "open",
+                          lost_reason: null,
+                          contact_id: CONTACT_ID_2,
+                          pipeline_id: PIPELINE_ID,
+                          stage_id: STAGE_ID,
+                          tags: [],
+                        },
+                        error: null,
+                      };
+                    }
+                    return { data: null, error: null };
+                  },
+                }),
+              }),
+            }),
+          };
+        }
+
+        if (table === "contacts") {
+          return {
+            select: () => ({
+              eq: (_f1: string, contactIdVal: string) => ({
+                eq: (_f2: string, orgIdVal: string) => ({
+                  maybeSingle: async () => {
+                    if (orgIdVal !== ORG_ID) return { data: null, error: null };
+                    const found = (opts.contacts ?? {})[contactIdVal];
+                    if (found) return { data: found, error: null };
+                    if (contactIdVal === CONTACT_ID) {
+                      return {
+                        data: {
+                          id: CONTACT_ID,
+                          name: "Dra. Renata",
+                          display_name: "Dra. Renata",
+                          phone_number: "+5531988887777",
+                          is_blocked: false,
+                          force_human: false,
+                          ai_opt_out: false,
+                          is_anonymized: false,
+                          consent: {},
+                          tags: [],
+                        },
+                        error: null,
+                      };
+                    }
+                    if (contactIdVal === CONTACT_ID_2) {
+                      return {
+                        data: {
+                          id: CONTACT_ID_2,
+                          name: "Dra. Vanessa",
+                          display_name: "Dra. Vanessa",
+                          phone_number: "+5531977776666",
+                          is_blocked: false,
+                          force_human: false,
+                          ai_opt_out: false,
+                          is_anonymized: false,
+                          consent: {},
+                          tags: [],
+                        },
+                        error: null,
+                      };
+                    }
+                    return { data: null, error: null };
+                  },
+                }),
+              }),
+            }),
+            update: (payload: Record<string, unknown>) => {
+              updatedContacts.push(payload);
+              return {
+                eq: () => ({
+                  eq: () => ({
+                    eq: () => ({ error: null }),
+                  }),
+                }),
+              };
+            },
+          };
+        }
+
+        if (table === "prospecting_exclusions") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({ data: null }),
+                }),
+              }),
+            }),
+          };
+        }
+
+        if (table === "conversations") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  data: opts.conversations ?? [],
+                  maybeSingle: async () => ({
+                    data: (opts.conversations ?? [])[0] ?? {
+                      id: "conv-1",
+                      status: "open",
+                      metadata: {},
+                    },
+                  }),
+                }),
+              }),
+            }),
+            update: (payload: Record<string, unknown>) => {
+              updatedConvs.push(payload);
+              return {
+                eq: () => ({
+                  eq: () => ({ error: null }),
+                }),
+              };
+            },
+          };
+        }
+
+        if (table === "prospecting_candidates") {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  or: (filterStr: string) => ({
+                    maybeSingle: async () => {
+                      const candidates = opts.candidates ?? [];
+                      const found = candidates.find((c) => {
+                        return (
+                          filterStr.includes(c.lead_id || "none") ||
+                          filterStr.includes(c.contact_id || "none") ||
+                          (c.phone && filterStr.includes(c.phone)) ||
+                          (c.place_id && filterStr.includes(c.place_id))
+                        );
+                      });
+                      return { data: found ?? null, error: null };
+                    },
+                  }),
+                }),
+                neq: () => ({
+                  in: () => ({
+                    or: () => ({
+                      maybeSingle: async () => {
+                        // Outras campanhas
+                        const other = (opts.candidates ?? []).find(
+                          (c) => c.campaign_id !== CAMPAIGN_ID,
+                        );
+                        return { data: other ?? null, error: null };
+                      },
+                    }),
+                  }),
+                }),
+              }),
+            }),
+            insert: (payload: Record<string, unknown>) => {
+              insertedCandidates.push(payload);
+              return {
+                select: () => ({
+                  single: async () => ({
+                    data: {
+                      id: "cand-new-1",
+                      status: payload.status,
+                    },
+                    error: null,
+                  }),
+                }),
+              };
+            },
+          };
+        }
+
+        if (table === "lead_activities" || table === "crm_lead_activities") {
+          return {
+            insert: async () => ({ error: null }),
+          };
+        }
+
+        return {};
+      }),
+    };
+
+    return { supabaseMock, mockDb };
+  }
+
+  const callEnroll = async (input: unknown, ctx: McpContext) => {
+    return (await enrollLeadsInProspectingCampaignTool.handler(input as never, ctx)) as Record<string, any>;
+  };
+
+  it("1. lead válido + campanha válida → inscrito com sucesso", async () => {
+    const { supabaseMock, mockDb } = createProspectingMock({});
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.enrolled).toBe(1);
+    expect(res.rejected).toBe(0);
+    expect(res.already_enrolled).toBe(0);
+    expect(res.requires_xavier_release).toBe(0);
+    expect(res.results[0]!.result).toBe("enrolled");
+    expect(res.results[0]!.queued).toBe(true);
+    expect(res.results[0]!.message_sent).toBe(false);
+    expect(mockDb.insertedCandidates.length).toBe(1);
+    expect(mockDb.insertedCandidates[0]!.status).toBe("queued");
+  });
+
+  it("2. múltiplos leads válidos → todos inscritos", async () => {
+    const { supabaseMock, mockDb } = createProspectingMock({});
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID, LEAD_ID_2],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.total_requested).toBe(2);
+    expect(res.enrolled).toBe(2);
+    expect(res.results.map((r: any) => r.result)).toEqual(["enrolled", "enrolled"]);
+    expect(mockDb.insertedCandidates.length).toBe(2);
+  });
+
+  it("3. execução repetida → sem duplicidade (already_enrolled)", async () => {
+    const { supabaseMock, mockDb } = createProspectingMock({
+      candidates: [
+        {
+          id: "cand-existing-1",
+          campaign_id: CAMPAIGN_ID,
+          lead_id: LEAD_ID,
+          contact_id: CONTACT_ID,
+          phone: "+5531988887777",
+          status: "queued",
+        },
+      ],
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.already_enrolled).toBe(1);
+    expect(res.enrolled).toBe(0);
+    expect(res.results[0]!.result).toBe("already_enrolled");
+    expect(mockDb.insertedCandidates.length).toBe(0);
+  });
+
+  it("4. lead sem contato → rejeitado", async () => {
+    const { supabaseMock } = createProspectingMock({
+      leads: {
+        [LEAD_ID]: {
+          id: LEAD_ID,
+          title: "Lead Sem Contato",
+          status: "open",
+          lost_reason: null,
+          contact_id: null,
+        },
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.rejected).toBe(1);
+    expect(res.results[0]!.result).toBe("rejected");
+    expect(res.results[0]!.reason).toContain("Lead não possui contato associado");
+  });
+
+  it("5. lead sem telefone → rejeitado", async () => {
+    const { supabaseMock } = createProspectingMock({
+      contacts: {
+        [CONTACT_ID]: {
+          id: CONTACT_ID,
+          name: "Contato Sem Telefone",
+          phone_number: "",
+          is_blocked: false,
+          force_human: false,
+        },
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.rejected).toBe(1);
+    expect(res.results[0]!.result).toBe("rejected");
+    expect(res.results[0]!.reason).toContain("Contato não possui telefone");
+  });
+
+  it("6. lead bloqueado → rejeitado", async () => {
+    const { supabaseMock } = createProspectingMock({
+      contacts: {
+        [CONTACT_ID]: {
+          id: CONTACT_ID,
+          name: "Contato Bloqueado",
+          phone_number: "+5531988887777",
+          is_blocked: true,
+          force_human: false,
+        },
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.rejected).toBe(1);
+    expect(res.results[0]!.result).toBe("rejected");
+    expect(res.results[0]!.reason).toContain("bloqueado");
+  });
+
+  it("7. opt-out registrado → rejeitado", async () => {
+    const { supabaseMock } = createProspectingMock({
+      contacts: {
+        [CONTACT_ID]: {
+          id: CONTACT_ID,
+          name: "Contato OptOut",
+          phone_number: "+5531988887777",
+          is_blocked: false,
+          force_human: false,
+          ai_opt_out: true,
+        },
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.rejected).toBe(1);
+    expect(res.results[0]!.result).toBe("rejected");
+    expect(res.results[0]!.reason).toContain("opt-out");
+  });
+
+  it("8. force_human=true e release_for_xavier=false → requires_xavier_release", async () => {
+    const { supabaseMock, mockDb } = createProspectingMock({
+      contacts: {
+        [CONTACT_ID]: {
+          id: CONTACT_ID,
+          name: "Contato Com Trava",
+          phone_number: "+5531988887777",
+          is_blocked: false,
+          force_human: true,
+          ai_opt_out: false,
+        },
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+        release_for_xavier: false,
+      },
+      ctx,
+    );
+
+    expect(res.requires_xavier_release).toBe(1);
+    expect(res.enrolled).toBe(0);
+    expect(res.results[0]!.result).toBe("requires_xavier_release");
+    expect(res.results[0]!.force_human_before).toBe(true);
+    expect(res.results[0]!.force_human_after).toBe(true);
+    expect(mockDb.updatedContacts.length).toBe(0);
+    expect(mockDb.insertedCandidates.length).toBe(0);
+  });
+
+  it("9. force_human=true e release_for_xavier=true → libera e inscreve", async () => {
+    const { supabaseMock, mockDb } = createProspectingMock({
+      contacts: {
+        [CONTACT_ID]: {
+          id: CONTACT_ID,
+          name: "Contato Com Trava",
+          phone_number: "+5531988887777",
+          is_blocked: false,
+          force_human: true,
+          ai_opt_out: false,
+        },
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+        release_for_xavier: true,
+      },
+      ctx,
+    );
+
+    expect(res.enrolled).toBe(1);
+    expect(res.requires_xavier_release).toBe(0);
+    expect(res.results[0]!.result).toBe("enrolled");
+    expect(res.results[0]!.force_human_before).toBe(true);
+    expect(res.results[0]!.force_human_after).toBe(false);
+    expect(mockDb.updatedContacts.some((c) => c["force_human"] === false)).toBe(true);
+    expect(mockDb.insertedCandidates.length).toBe(1);
+  });
+
+  it("10. tag abordagem-site-inicial → rejeitado", async () => {
+    const { supabaseMock } = createProspectingMock({
+      leads: {
+        [LEAD_ID]: {
+          id: LEAD_ID,
+          title: "Lead Site Inicial",
+          status: "open",
+          contact_id: CONTACT_ID,
+          tags: ["abordagem-site-inicial"],
+        },
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.rejected).toBe(1);
+    expect(res.results[0]!.result).toBe("rejected");
+    expect(res.results[0]!.reason).toContain("abordagem-site-inicial");
+  });
+
+  it("11. tag prospeccao-manual → rejeitado", async () => {
+    const { supabaseMock } = createProspectingMock({
+      leads: {
+        [LEAD_ID]: {
+          id: LEAD_ID,
+          title: "Lead Prospeccao Manual",
+          status: "open",
+          contact_id: CONTACT_ID,
+          tags: ["prospeccao-manual"],
+        },
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.rejected).toBe(1);
+    expect(res.results[0]!.result).toBe("rejected");
+    expect(res.results[0]!.reason).toContain("prospeccao-manual");
+  });
+
+  it("12. tag Aguardando site para abordagem → rejeitado", async () => {
+    const { supabaseMock } = createProspectingMock({
+      leads: {
+        [LEAD_ID]: {
+          id: LEAD_ID,
+          title: "Lead Aguardando Site",
+          status: "open",
+          contact_id: CONTACT_ID,
+          tags: ["Aguardando site para abordagem"],
+        },
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.rejected).toBe(1);
+    expect(res.results[0]!.result).toBe("rejected");
+    expect(res.results[0]!.reason).toContain("Aguardando site para abordagem");
+  });
+
+  it("13. campanha pausada → inscrito/queued com 0 mensagens imediatas", async () => {
+    const { supabaseMock, mockDb } = createProspectingMock({
+      campaign: {
+        status: "paused",
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.enrolled).toBe(1);
+    expect(res.results[0]!.queued).toBe(true);
+    expect(res.results[0]!.message_sent).toBe(false);
+    expect(mockDb.insertedCandidates[0]!.status).toBe("queued");
+  });
+
+  it("14. campanha ativa → queued normalmente, sem envio síncrono", async () => {
+    const { supabaseMock, mockDb } = createProspectingMock({
+      campaign: {
+        status: "running",
+      },
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    expect(res.enrolled).toBe(1);
+    expect(res.results[0]!.queued).toBe(true);
+    expect(res.results[0]!.message_sent).toBe(false);
+    expect(mockDb.insertedCandidates[0]!.status).toBe("queued");
+  });
+
+  it("15. isolamento por organização → rejeita campanha ou lead de outro tenant", async () => {
+    const { supabaseMock } = createProspectingMock({
+      campaign: null, // não encontrada na org
+    });
+    const ctx = mockCtx(supabaseMock);
+
+    await expect(
+      callEnroll(
+        {
+          lead_ids: [LEAD_ID],
+          campaign_id: "00000000-0000-4000-8000-000000000999",
+        },
+        ctx,
+      ),
+    ).rejects.toThrow("Campanha de prospecção não encontrada pelo ID");
+  });
+
+  it("16. nenhum send_message chamado (message_sent sempre false)", async () => {
+    const { supabaseMock } = createProspectingMock({});
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_id: CAMPAIGN_ID,
+      },
+      ctx,
+    );
+
+    for (const r of res.results) {
+      expect(r.message_sent).toBe(false);
+    }
+  });
+
+  it("17. integração com marcador/follow-up existente preservada", async () => {
+    const { supabaseMock, mockDb } = createProspectingMock({});
+    const ctx = mockCtx(supabaseMock);
+
+    const res = await callEnroll(
+      {
+        lead_ids: [LEAD_ID],
+        campaign_name: "Campanha Teste Odonto",
+      },
+      ctx,
+    );
+
+    expect(res.enrolled).toBe(1);
+    expect(res.campaign_name).toBe("Campanha Teste Odonto");
+    // Place ID segue padrão lead:UUID
+    expect(mockDb.insertedCandidates[0]!.place_id).toBe(`lead:${LEAD_ID}`);
+    // selected=true por padrão
+    expect(mockDb.insertedCandidates[0]!.selected).toBe(true);
+    // metadata da conversa vincula campaign_id
+    expect(
+      mockDb.updatedConvs.some(
+        (c) =>
+          (c["metadata"] as Record<string, unknown>)?.prospecting_campaign_id === CAMPAIGN_ID,
+      ),
+    ).toBe(true);
   });
 });
 

@@ -2,7 +2,7 @@
  * Servidor MCP dedicado para conexão do ChatGPT.
  *
  * Utiliza o SDK oficial @modelcontextprotocol/sdk com WebStandardStreamableHTTPServerTransport.
- * Registra exclusivamente as 11 ferramentas operacionais do CRM.
+ * Registra exclusivamente as 12 ferramentas operacionais do CRM.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { z } from "zod";
@@ -16,7 +16,7 @@ import type { McpContext } from "../types";
 import { chatGptTools } from "./tools";
 
 const SERVER_NAME = "fluxalvo-crm-mcp";
-const SERVER_VERSION = "1.1.0";
+const SERVER_VERSION = "1.2.0";
 
 export function createChatGptMcpServer(
   auth: McpAuthResult,
