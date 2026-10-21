@@ -103,33 +103,51 @@ export function ehRespostaAutomatica(texto: string | null | undefined): boolean 
 /**
  * Detecta quantas tentativas o agente já realizou contra bots/menus sem resposta humana.
  * Limite de segurança anti-loop: máximo 1 tentativa.
+ *
+ * REGRA ESTRUTURAL:
+ * - A mensagem de abordagem fria inicial (enviada ANTES de qualquer contato do bot)
+ *   NUNCA é uma tentativa contra bot.
+ * - Somente mensagens outbound enviadas APÓS o primeiro contato com um bot (e antes
+ *   de qualquer resposta humana posterior) contam como tentativas contra bot.
+ * - Resposta humana real (Nível 0) zera o histórico de tentativas contra bot.
  */
 export function contarTentativasContraBot(
   mensagens: Array<{ direction: string; body?: string | null }>,
 ): number {
-  let tentativas = 0;
-  for (let i = mensagens.length - 1; i >= 0; i--) {
+  if (!mensagens || mensagens.length === 0) return 0;
+
+  // 1. Encontrar o índice da última resposta humana real (Nível 0)
+  let ultimoHumanoIndex = -1;
+  for (let i = 0; i < mensagens.length; i++) {
     const msg = mensagens[i];
-    if (!msg) continue;
-    // Se houve resposta humana real (Nível 0), zera o histórico de tentativas contra bot
-    if (msg.direction === "inbound" && !ehRespostaAutomatica(msg.body)) {
-      break;
-    }
-    if (msg.direction === "outbound") {
-      const limpo = normalizarTexto(msg.body || "");
-      if (
-        limpo.includes("nao e proposta de fornecimento") ||
-        limpo.includes("fornecimento") ||
-        limpo.includes("responsavel pelo atendimento") ||
-        limpo.includes("comercial") ||
-        limpo.includes("minha solicitacao e falar com") ||
-        limpo.includes("fico no aguardo quando estiverem disponiveis") ||
-        limpo.includes("quando puderem, fico a disposicao") ||
-        limpo.includes("outros assuntos")
-      ) {
-        tentativas++;
-      }
+    if (msg && msg.direction === "inbound" && !ehRespostaAutomatica(msg.body)) {
+      ultimoHumanoIndex = i;
     }
   }
+
+  // 2. Após o último humano, encontrar o primeiro contato com bot/resposta automática
+  let primeiroBotIndex = -1;
+  for (let i = ultimoHumanoIndex + 1; i < mensagens.length; i++) {
+    const msg = mensagens[i];
+    if (msg && msg.direction === "inbound" && ehRespostaAutomatica(msg.body)) {
+      primeiroBotIndex = i;
+      break;
+    }
+  }
+
+  // Se nenhum bot foi recebido após a última interação humana, não há tentativa contra bot
+  if (primeiroBotIndex === -1) {
+    return 0;
+  }
+
+  // 3. Contar quantas mensagens outbound foram enviadas APÓS o primeiro contato com o bot
+  let tentativas = 0;
+  for (let i = primeiroBotIndex + 1; i < mensagens.length; i++) {
+    const msg = mensagens[i];
+    if (msg && msg.direction === "outbound") {
+      tentativas++;
+    }
+  }
+
   return tentativas;
 }

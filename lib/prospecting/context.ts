@@ -38,7 +38,11 @@ export async function prospectingConversationContext(
 
       if (ehRespostaAutomatica(lastInbound.body)) {
         if (tentativasContraBot >= 1) {
-          orientacaoAutomacao = `\n\n[ORIENTAÇÃO SITUACIONAL ANTI-LOOP]: O sistema da empresa repetiu resposta automática/bloqueio e você JÁ realizou 1 tentativa de contato com uma pessoa. Conforme a regra de limite contra loops, NÃO insista, NÃO faça novas tentativas e encerre educadamente a conversa sem insistência.`;
+          if (nivel === 1) {
+            orientacaoAutomacao = `\n\n[ORIENTAÇÃO SITUACIONAL - NÍVEL 1 (AGUARDANDO HUMANO)]: Você já registrou sua apresentação e solicitação anteriormente. A empresa enviou outra mensagem automática/de espera. NÃO envie nova mensagem, NÃO repita a solicitação, NÃO encerre a conversa e NÃO considere recusa comercial. Apenas aguarde o retorno de uma pessoa real.`;
+          } else {
+            orientacaoAutomacao = `\n\n[ORIENTAÇÃO SITUACIONAL ANTI-LOOP]: O sistema da empresa repetiu menu/bloqueio automático e você JÁ realizou 1 tentativa de contato com uma pessoa. Conforme a regra de limite contra loops, NÃO insista, NÃO envie novas mensagens e NÃO fique em loop com o bot.`;
+          }
         } else if (bloqueioFornecedor) {
           orientacaoAutomacao = `\n\n[ORIENTAÇÃO SITUACIONAL - BLOQUEIO DE FORNECEDORES]: Foi recebida resposta automática de recusa a fornecedores/parcerias. Isso NÃO é recusa humana e não desqualifica o prospect. Faça no máximo 1 tentativa curta esclarecendo que não é fornecimento e pedindo contato com o comercial.`;
         } else if (nivel === 3) {
@@ -46,7 +50,7 @@ export async function prospectingConversationContext(
         } else if (nivel === 2) {
           orientacaoAutomacao = `\n\n[ORIENTAÇÃO SITUACIONAL - NÍVEL 2 (MENU BÁSICO)]: Foi recebido menu ou opções de setor. Escolha a opção de atendimento/comercial/gestão/outros assuntos para chegar a uma pessoa real. Respeite o limite de 1 tentativa em caso de bloqueio.`;
         } else if (nivel === 1) {
-          orientacaoAutomacao = `\n\n[ORIENTAÇÃO SITUACIONAL - NÍVEL 1 (AUSÊNCIA/RETORNO EM BREVE)]: Foi recebida resposta de ausência/indisponibilidade. Responda no máximo 1 vez deixando seu nome, Fluxalvo e motivo resumido, e aguarde atendimento humano. Não qualifique nem desqualifique.`;
+          orientacaoAutomacao = `\n\n[ORIENTAÇÃO SITUACIONAL - NÍVEL 1 (BOAS-VINDAS / AUSÊNCIA / ESPERA)]: A empresa enviou resposta automática de boas-vindas, ausência, espera ou solicitou deixar uma mensagem/solicitação. Isso NÃO é recusa comercial e NÃO encerra a prospecção. Responda no máximo 1 única vez de forma breve e cordial: apresente-se como Xavier da Fluxalvo, registre sua solicitação (falar com o responsável comercial/atendimento sobre acompanhamento de orçamentos) e diga que fica no aguardo quando estiverem disponíveis. NÃO encerre a conversa, NÃO qualifique ou desqualifique, NÃO considere rejeição e NÃO envie novas mensagens até uma pessoa real responder.`;
         }
       }
     }

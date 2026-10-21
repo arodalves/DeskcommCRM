@@ -94,12 +94,28 @@ describe("Classificação de Níveis de Automação e Respostas Automáticas", (
   });
 
   it("6. Proteção contra loops: conta tentativas consecutivas contra bot e detecta limite de 1 tentativa", () => {
-    // Caso 1: Nenhuma tentativa anterior contra bot
+    // Caso 1: Nenhuma tentativa anterior contra bot (mesmo que a mensagem inicial contenha a palavra 'comercial')
     const convoSemTentativa = [
-      { direction: "outbound", body: "Olá! Sou Xavier, da Fluxalvo..." },
+      {
+        direction: "outbound",
+        body: "Olá! Sou Xavier, da Fluxalvo... Posso falar com o responsável comercial para entender como vocês acompanham os pedidos de orçamento pelo WhatsApp?",
+      },
       { direction: "inbound", body: "1 - Orçamentos\n2 - Financeiro\n3 - Outros Assuntos" },
     ];
     expect(contarTentativasContraBot(convoSemTentativa)).toBe(0);
+
+    // Caso 1b: Caso real Imagine Planejados DM (Dawan pede para deixar solicitação)
+    const convoImaginePlanejados = [
+      {
+        direction: "outbound",
+        body: "Olá! Sou Xavier, da Fluxalvo, e encontrei a Imagine Planejados DM em uma pesquisa pública de marcenarias. Posso falar com o responsável comercial para entender como vocês acompanham os pedidos de orçamento pelo WhatsApp?\n\nCaso prefira não receber novos contatos, basta me avisar.",
+      },
+      {
+        direction: "inbound",
+        body: "Olá, seja bem vindo (a).\n\nAqui é o Dawan, do Imagine Planejados e será um prazer auxiliar na realização do móvel do seu sonho!  \n\nPor favor, deixe sua solicitação que em breve responderei. \n\n🏡",
+      },
+    ];
+    expect(contarTentativasContraBot(convoImaginePlanejados)).toBe(0);
 
     // Caso 2: 1 tentativa realizada (escolheu opção ou tentou contornar bloqueio)
     const convoUmaTentativa = [
@@ -187,6 +203,55 @@ describe("Classificação de Níveis de Automação e Respostas Automáticas", (
 
     const ctx = await prospectingConversationContext(mockDb as unknown as Queryable, "org-uuid", "conv-uuid");
     expect(ctx).toContain("[ORIENTAÇÃO SITUACIONAL ANTI-LOOP]");
-    expect(ctx).toContain("NÃO insista, NÃO faça novas tentativas e encerre");
+    expect(ctx).toContain("NÃO insista, NÃO envie novas mensagens e NÃO fique em loop com o bot");
+  });
+
+  it("9. Caso Imagine Planejados: Nível 1 não encerra prematuramente e instrui registro de solicitação", async () => {
+    const mockDb = {
+      query: vi.fn((sql: string) => {
+        if (sql.includes("prospecting_candidates")) {
+          return Promise.resolve({
+            rows: [
+              {
+                config: {
+                  agent_id: "210a010f-5837-458b-9a66-21fc9e5a65e3",
+                  channel_session_id: "7b47b2c2-8b0a-4145-8890-d6c878bd96f7",
+                  instruction: "Abordagem inicial",
+                  qualification: "Critérios de qualificação",
+                  pipeline_id: "2ddec45b-1cb6-45c7-a8eb-5ac6a23e5873",
+                  stage_id: "b6adf17c-8b0a-4145-8890-d6c878bd96f7",
+                  qualified_stage_id: "c7bdf17c-8b0a-4145-8890-d6c878bd96f8",
+                  daily_limit: 10,
+                  interval_minutes: 15,
+                  legal_basis_ref: "legitimo_interesse",
+                  funnel_entry: "on_start",
+                },
+              },
+            ],
+          });
+        }
+        if (sql.includes("messages")) {
+          // Primeira resposta recebida: Dawan pedindo para deixar solicitação
+          return Promise.resolve({
+            rows: [
+              {
+                direction: "inbound",
+                body: "Olá, seja bem vindo (a).\nAqui é o Dawan, do Imagine Planejados... Por favor, deixe sua solicitação que em breve responderei.",
+              },
+              {
+                direction: "outbound",
+                body: "Olá! Sou Xavier, da Fluxalvo... Posso falar com o responsável comercial?\n\nCaso prefira não receber novos contatos, basta me avisar.",
+              },
+            ],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      }),
+    };
+
+    const ctx = await prospectingConversationContext(mockDb as unknown as Queryable, "org-uuid", "conv-uuid");
+    expect(ctx).toContain("[ORIENTAÇÃO SITUACIONAL - NÍVEL 1 (BOAS-VINDAS / AUSÊNCIA / ESPERA)]");
+    expect(ctx).toContain("Isso NÃO é recusa comercial e NÃO encerra a prospecção");
+    expect(ctx).toContain("NÃO encerre a conversa, NÃO qualifique ou desqualifique, NÃO considere rejeição");
   });
 });
