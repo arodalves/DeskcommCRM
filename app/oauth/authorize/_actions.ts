@@ -63,13 +63,15 @@ export async function submitConsentAction(formData: FormData): Promise<void> {
   } catch {
     reqHeaders = null;
   }
-  const canonicalResource = `${resolveOriginFromHeaders(reqHeaders)}/mcp`;
+  const origin = resolveOriginFromHeaders(reqHeaders);
+  const canonicalResource = `${origin}/mcp`;
   const normalizedRawResource = rawResource ? rawResource.replace(/\/+$/, "") : null;
 
   if (normalizedRawResource && normalizedRawResource !== canonicalResource) {
     const errorUrl = new URL(redirectUri);
     errorUrl.searchParams.set("error", "invalid_target");
     errorUrl.searchParams.set("error_description", "Recurso não suportado por este servidor MCP.");
+    errorUrl.searchParams.set("iss", origin);
     if (state) errorUrl.searchParams.set("state", state);
     redirect(errorUrl.toString());
   }
@@ -81,6 +83,7 @@ export async function submitConsentAction(formData: FormData): Promise<void> {
     const errorUrl = new URL(redirectUri);
     errorUrl.searchParams.set("error", "access_denied");
     errorUrl.searchParams.set("error_description", "Consentimento recusado pelo usuário.");
+    errorUrl.searchParams.set("iss", origin);
     if (state) errorUrl.searchParams.set("state", state);
     redirect(errorUrl.toString());
   }
@@ -89,6 +92,7 @@ export async function submitConsentAction(formData: FormData): Promise<void> {
     const errorUrl = new URL(redirectUri);
     errorUrl.searchParams.set("error", "invalid_request");
     errorUrl.searchParams.set("error_description", "PKCE S256 (code_challenge) é obrigatório.");
+    errorUrl.searchParams.set("iss", origin);
     if (state) errorUrl.searchParams.set("state", state);
     redirect(errorUrl.toString());
   }
@@ -121,6 +125,7 @@ export async function submitConsentAction(formData: FormData): Promise<void> {
 
   const successUrl = new URL(redirectUri);
   successUrl.searchParams.set("code", code);
+  successUrl.searchParams.set("iss", origin);
   if (state) successUrl.searchParams.set("state", state);
 
   redirect(successUrl.toString());

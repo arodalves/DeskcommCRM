@@ -169,6 +169,7 @@ describe("OAuth 2.1 — Descoberta de Metadados e Origem Canônica Segura (RFC 8
     expect(meta.response_types_supported).toContain("code");
     expect(meta.grant_types_supported).toEqual(["authorization_code", "refresh_token"]);
     expect(meta.code_challenge_methods_supported).toEqual(["S256"]);
+    expect(meta.authorization_response_iss_parameter_supported).toBe(true);
     expect(meta.scopes_supported).toContain("mcp:read");
     expect(meta.scopes_supported).toContain("mcp:write");
   });
@@ -1086,6 +1087,23 @@ describe("OAuth 2.1 — Verificações Específicas de Segurança e Conformidade
 
       // 4. Sem parâmetro: undefined
       expect(resolveNext({})).toBeUndefined();
+    });
+
+    it("monta a URL de retorno com code, state e iss conforme RFC 9207 (mix-up mitigation)", () => {
+      const redirectUri = "https://chatgpt.com/api/mcp/oauth_callback";
+      const code = "dsk_authcode_mock_123";
+      const state = "state_xyz_789";
+      const origin = "https://crm.fluxalvo.com";
+
+      const successUrl = new URL(redirectUri);
+      successUrl.searchParams.set("code", code);
+      successUrl.searchParams.set("iss", origin);
+      if (state) successUrl.searchParams.set("state", state);
+
+      expect(successUrl.searchParams.get("code")).toBe(code);
+      expect(successUrl.searchParams.get("iss")).toBe(origin);
+      expect(successUrl.searchParams.get("state")).toBe(state);
+      expect(successUrl.origin).toBe("https://chatgpt.com");
     });
   });
 });

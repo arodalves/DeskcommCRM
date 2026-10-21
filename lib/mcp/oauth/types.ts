@@ -56,6 +56,7 @@ export interface AuthorizationServerMetadata {
   grant_types_supported: string[];
   token_endpoint_auth_methods_supported: string[];
   code_challenge_methods_supported: string[];
+  authorization_response_iss_parameter_supported?: boolean;
 }
 
 export interface ProtectedResourceMetadata {
