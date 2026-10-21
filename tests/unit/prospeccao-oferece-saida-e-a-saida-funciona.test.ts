@@ -34,7 +34,7 @@ describe("a abordagem fria oferece uma saída", () => {
   it("o rodapé sai em toda mensagem de abordagem, colado ao texto do modelo", () => {
     const corpo = comSaida("Oi! Vi a padaria de vocês no mapa.", "pt-BR");
     expect(corpo).toContain("Oi! Vi a padaria de vocês no mapa.");
-    expect(corpo).toContain("PARAR");
+    expect(corpo).toContain("Caso prefira não receber novos contatos, basta me avisar.");
   });
 
   it("não duplica quando o texto já termina com o rodapé", () => {
@@ -50,8 +50,8 @@ describe("a abordagem fria oferece uma saída", () => {
     expect(rodapeDeSaida("en-US")).toContain("STOP");
     // Idioma desconhecido cai no padrão do produto, COM rodapé. Ficar sem é o
     // defeito que este módulo conserta.
-    expect(rodapeDeSaida("de-DE")).toContain("PARAR");
-    expect(rodapeDeSaida(null)).toContain("PARAR");
+    expect(rodapeDeSaida("de-DE")).toContain("Caso prefira não receber novos contatos, basta me avisar.");
+    expect(rodapeDeSaida(null)).toContain("Caso prefira não receber novos contatos, basta me avisar.");
   });
 });
 
@@ -67,6 +67,14 @@ describe("e a saída oferecida realmente funciona (a volta)", () => {
       expect(ehPedidoDeOptOut(palavra.toLowerCase())).toBe(true);
       expect(ehPedidoDeOptOut(` ${palavra.toLowerCase()}.`)).toBe(true);
     }
+  });
+
+  it("continua reconhecendo recusas como PARAR, pare, não me contate e equivalentes", () => {
+    expect(ehPedidoDeOptOut("PARAR")).toBe(true);
+    expect(ehPedidoDeOptOut("pare")).toBe(true);
+    expect(ehPedidoDeOptOut("não me contate mais")).toBe(true);
+    expect(ehPedidoDeOptOut("nao entre em contato")).toBe(true);
+    expect(ehPedidoDeOptOut("não quero receber mais mensagens")).toBe(true);
   });
 
   it("a promessa é verificada contra o detector em tempo de execução, não por convenção", () => {
