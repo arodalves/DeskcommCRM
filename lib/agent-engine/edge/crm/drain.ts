@@ -27,6 +27,7 @@ import { haQuemAtendaASessao } from '@/lib/ai/agents/quem-atende-a-sessao';
 import { decidirElegibilidadeDaConversa } from '@/lib/ai/elegibilidade/consulta-pg';
 import { deveCederTurnoAoRetorno } from '@/lib/followup/ceder-turno-ao-retorno';
 import { ehOperante } from '@/lib/organizacao/operante';
+import { ehSolicitacaoComercialInequivoca, ehMensagemDeSuporteOuProblema } from '@/lib/agent-engine/relevancia/classificador';
 
 const DRAIN_CONSUMER = 'agent-engine';
 
@@ -385,6 +386,31 @@ async function processEvent(
       contact_id: p.contact_id,
     });
     return 'processado';
+  }
+
+  // RELEVÂNCIA COMERCIAL: se a conversa já estiver encerrada por falta de interesse / recusa,
+  // e a mensagem recebida for puramente social ou não comercial, não há por que
+  // aguardar derivação de mídia nem enfileirar turno para acordar IA.
+  const { rows: convMetadata } = await pool.query<{ metadata: Record<string, unknown> | null }>(
+    `select metadata from conversations where organization_id = $1 and id = $2`,
+    [event.organization_id, p.conversation_id],
+  );
+  const estadoRelevancia = convMetadata[0]?.metadata?.['relevancia_comercial'] as { estado?: string } | undefined;
+  if (estadoRelevancia?.estado === 'encerrado_sem_interesse' || estadoRelevancia?.estado === 'contato_acidental') {
+    const { rows: msgRow } = await pool.query<{ body: string | null; type: string }>(
+      `select body, type from messages where organization_id = $1 and id = $2`,
+      [event.organization_id, p.inbound_message_id],
+    );
+    const corpo = msgRow[0]?.body ?? '';
+    const tipo = msgRow[0]?.type ?? 'text';
+    if (!ehSolicitacaoComercialInequivoca(corpo) && !ehMensagemDeSuporteOuProblema(corpo)) {
+      log.info('drain: mensagem social suprimida em conversa encerrada por recusa', {
+        event_id: event.id,
+        conversation_id: p.conversation_id,
+        tipo,
+      });
+      return 'processado';
+    }
   }
 
   // GATE DE ELEGIBILIDADE (opt-in por canal — `metadata.ai_gate = 'allowlist'`).

@@ -136,6 +136,13 @@ import {
   type StageClassifierKnobs,
 } from './stage-classifier';
 import { classificadoresDoTurno } from './classificadores-do-turno';
+import {
+  avaliarRelevanciaDoTurno,
+  lerEstadoRelevanciaConversa,
+  executarEncerramentoPorRecusa,
+  executarReaberturaComercial,
+  gravarDecisaoDeSupressao,
+} from '../relevancia/barreira';
 import { loadPlaybook } from './playbook';
 import { promessasEmAberto } from './declaracao';
 import {
@@ -1804,6 +1811,50 @@ export async function deteccoesDeterministicasDoAssistido(
       });
     }
   }
+  // BARREIRA DE RELEVÂNCIA COMERCIAL NO ASSISTIDO:
+  const estadoDaConversaAssistido = await lerEstadoRelevanciaConversa(pool, tenantId, conversationId);
+  const decisaoRelevanciaAssistido = avaliarRelevanciaDoTurno({
+    mensagemAtual: inboundsPendentes[inboundsPendentes.length - 1] ?? '',
+    inboundsPendentes,
+    estadoRelevancia: estadoDaConversaAssistido.estado,
+    conversaStatus: estadoDaConversaAssistido.status,
+    conversaEncerradaEm: estadoDaConversaAssistido.service_closed_at,
+    historicoMensagens: [],
+  });
+
+  if (decisaoRelevanciaAssistido.acao === 'encerrar_por_recusa') {
+    await executarEncerramentoPorRecusa(pool, {
+      liveChannel: () => avisoDaEscalacao().base.channel,
+      tenantId,
+      leadId,
+      conversationId,
+      deveEnviarDespedida: decisaoRelevanciaAssistido.deveEnviarDespedida,
+      motivo: decisaoRelevanciaAssistido.motivo,
+      log,
+    });
+    return true; // silencia modo assistido: sem rascunho
+  }
+
+  if (decisaoRelevanciaAssistido.acao === 'suprimir') {
+    await gravarDecisaoDeSupressao(pool, {
+      tenantId,
+      conversationId,
+      motivo: decisaoRelevanciaAssistido.motivo,
+      textoOriginal: inboundsPendentes.join(' | '),
+      log,
+    });
+    return true; // silencia modo assistido: sem rascunho
+  }
+
+  if (decisaoRelevanciaAssistido.acao === 'reabrir_comercial') {
+    await executarReaberturaComercial(pool, {
+      tenantId,
+      leadId,
+      conversationId,
+      log,
+    });
+  }
+
   return false;
 }
 
@@ -2630,6 +2681,83 @@ async function executarTurnoDoAgente(
       lead_avisado: aviso.avisado,
     });
     return; // bot silencia: a confirmação já saiu, e nada mais sai neste turno
+  }
+
+  // BARREIRA DE RELEVÂNCIA COMERCIAL:
+  // Suprime mensagens exclusivamente sociais (saudações vazias, figurinhas, agradecimentos,
+  // correntes, imagens sem contexto comercial) e encerra o atendimento em caso de recusa
+  // expressa ou contato acidental, evitando chamadas pagas ao LLM e spam no WhatsApp.
+  if (!preview && input.conversationId) {
+    const estadoDaConversa = await lerEstadoRelevanciaConversa(pool, tenantId, input.conversationId, leadId);
+    const temTagsDeCliente = openingContext.context.contact.tags.some((t) =>
+      ['cliente', 'aluno', 'assinante', 'ativo', 'comprador'].includes(t.toLowerCase()),
+    );
+    const temVinculoComercial = estadoDaConversa.temVinculoComercial || temTagsDeCliente;
+    const ehProspeccao =
+      estadoDaConversa.ehProspeccaoAtiva ||
+      (agentConfig?.systemPrompt != null && /gael|prospec/i.test(agentConfig.systemPrompt));
+    const papelAgente =
+      agentConfig?.casesEnabled === true
+        ? 'suporte'
+        : ehProspeccao
+          ? 'prospeccao'
+          : 'comercial';
+
+    const decisaoRelevancia = avaliarRelevanciaDoTurno({
+      mensagemAtual: mensagemDoJob,
+      inboundsPendentes,
+      tipoMensagem: openingContext.context.messages.slice(-1)[0]?.type,
+      temMidia: Boolean(openingContext.context.messages.slice(-1)[0]?.media_storage_path),
+      contexto: {
+        papelAgente,
+        ehProspeccaoAtiva: ehProspeccao,
+        temVinculoComercial,
+        etapaFunil: estadoDaConversa.etapaFunil,
+        ehInicioDeAtendimento: openingContext.context.messages.length <= 1,
+      },
+      estadoRelevancia: estadoDaConversa.estado,
+      conversaStatus: estadoDaConversa.status,
+      conversaEncerradaEm: estadoDaConversa.service_closed_at,
+      historicoMensagens: openingContext.context.messages,
+      possuiCasoAberto:
+        agentConfig?.casesEnabled === true &&
+        (await getCaseAwaitingLead(pool, tenantId, input.conversationId)) !== null,
+      leadEmHandoffHumano: estadoDaConversa.temAtendenteHumano,
+    });
+
+    if (decisaoRelevancia.acao === 'encerrar_por_recusa') {
+      await executarEncerramentoPorRecusa(pool, {
+        liveChannel,
+        tenantId,
+        leadId,
+        conversationId: input.conversationId,
+        deveEnviarDespedida: decisaoRelevancia.deveEnviarDespedida,
+        motivo: decisaoRelevancia.motivo,
+        permitirMoverParaPerda: !temVinculoComercial && estadoDaConversa.etapaFunil !== 'won',
+        log: runLog,
+      });
+      return; // encerrou por recusa com despedida única: nada mais roda neste turno
+    }
+
+    if (decisaoRelevancia.acao === 'suprimir') {
+      await gravarDecisaoDeSupressao(pool, {
+        tenantId,
+        conversationId: input.conversationId,
+        motivo: decisaoRelevancia.motivo,
+        textoOriginal: mensagemDoJob,
+        log: runLog,
+      });
+      return; // mensagem suprimida: sem LLM, sem envio WhatsApp
+    }
+
+    if (decisaoRelevancia.acao === 'reabrir_comercial') {
+      await executarReaberturaComercial(pool, {
+        tenantId,
+        leadId,
+        conversationId: input.conversationId,
+        log: runLog,
+      });
+    }
   }
 
   // ROTEIRO DE ATENDIMENTO (módulo opcional `fluxos_atendimento`, #1130). Entra

@@ -9,6 +9,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { LeadContextMessage } from "@/lib/agent-engine/edge/crm/get-lead-context";
 import { modelCapabilities } from "@/lib/agent-engine/edge/llm/capabilities";
 import { visaoEmVigor } from "@/lib/ai/pontos/capacidade-em-vigor";
+import { imagemTemContextoComercial } from "@/lib/agent-engine/relevancia/classificador";
 
 
 /**
@@ -92,6 +93,11 @@ export async function buildNativeMediaParts(args: BuildNativeMediaPartsArgs): Pr
         const isImage = m.type === "image" && mime.startsWith("image/") && caps.image;
         const isPdf = m.type === "document" && mime === "application/pdf" && caps.pdf;
         if (!isImage && !isPdf) continue;
+
+        // Evita visão multimodal paga em imagens sem solicitação ou contexto comercial
+        if (isImage && !imagemTemContextoComercial(m.body, args.messages)) {
+          continue;
+        }
 
         const dl = await args.admin.storage.from("whatsapp-media").download(m.media_storage_path!);
         if (dl.error || !dl.data) continue;

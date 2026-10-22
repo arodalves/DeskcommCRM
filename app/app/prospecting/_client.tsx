@@ -1174,7 +1174,7 @@ export function ProspectingClient() {
                               <p className="mt-1 text-xs text-muted-foreground">
                                 {c.data.rating ?? "—"} ★ · {c.data.reviews ?? 0} {t("avaliações")}
                               </p>
-                              {c.data.emails.map((email) => (
+                              {(c.data.emails ?? []).map((email) => (
                                 <p key={email} className="mt-1 text-xs break-all">
                                   {email}
                                 </p>
