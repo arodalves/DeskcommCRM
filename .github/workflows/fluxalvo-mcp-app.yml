@@ -45,6 +45,8 @@ jobs:
           tags: ${{ env.IMAGE }}
           build-args: |
             APP_VERSION=${{ env.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -58,9 +60,17 @@ jobs:
             -e NEXT_PUBLIC_SUPABASE_ANON_KEY=test-placeholder-anon-key \
             -e SUPABASE_SERVICE_ROLE_KEY=test-placeholder-service-role-key \
             -e SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres \
+            -e CPF_ENCRYPTION_KEY=ci-smoke-only \
+            -e WAHA_BYO_ENCRYPTION_KEY=ci-smoke-only \
+            -e AI_CRED_AES_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -e WAHA_API_BASE_URL=http://127.0.0.1:3001 \
+            -e WAHA_API_KEY=ci-smoke-only \
+            -e WAHA_WEBHOOK_BASE_URL=http://127.0.0.1:3000 \
+            -e UPSTASH_REDIS_REST_URL=http://127.0.0.1:8079 \
+            -e UPSTASH_REDIS_REST_TOKEN=ci-smoke-only \
             -e INTERNAL_SECRET=ci-standalone-smoke-only \
             -e SENTRY_DSN=off "$IMAGE"
-          trap 'docker rm -f smoke >/dev/null 2>&1 || true' EXIT
+          trap 'rc=$?; docker logs smoke; docker rm -f smoke >/dev/null 2>&1 || true; exit $rc' EXIT
           ready=false
           for n in $(seq 1 40); do
             test "$(docker inspect -f '{{.State.Running}}' smoke)" = true || { docker logs smoke; exit 1; }
@@ -68,8 +78,12 @@ jobs:
             sleep 3
           done
           test "$ready" = true
-          test "$(curl --max-time 30 -s -o /tmp/login.html -w '%{http_code}' http://127.0.0.1:3000/login)" = 200
-          test "$(curl --max-time 15 -s -o /tmp/mcp.json -w '%{http_code}' -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' http://127.0.0.1:3000/mcp)" = 401
+          login_http="$(curl --max-time 30 -s -o /tmp/login.html -w '%{http_code}' http://127.0.0.1:3000/login)"
+          echo "LOGIN_HTTP=$login_http"
+          test "$login_http" = 200
+          mcp_http="$(curl --max-time 15 -s -o /tmp/mcp.json -w '%{http_code}' -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' http://127.0.0.1:3000/mcp)"
+          echo "MCP_HTTP=$mcp_http"
+          test "$mcp_http" = 401
           if docker logs smoke 2>&1 | grep -q MODULE_NOT_FOUND; then docker logs smoke; exit 1; fi
           docker exec smoke node -e "const fs=require('fs'),p=require('path');let texts=[];function scan(d){for(const x of fs.readdirSync(d,{withFileTypes:true})){const f=p.join(d,x.name);if(x.isDirectory())scan(f);else if(f.endsWith('.js'))texts.push(fs.readFileSync(f,'utf8'));}}scan('/app/.next/server');const all=texts.join('\\n');for(const n of ['list_prospecting_campaigns','list_campaign_conversations','get_lead_conversation','get_campaign_prospecting_summary'])if(!all.includes(n))throw Error('missing_tool:'+n);console.log('Quatro ferramentas presentes no bundle Linux');"
           docker logs smoke > smoke.log 2>&1
