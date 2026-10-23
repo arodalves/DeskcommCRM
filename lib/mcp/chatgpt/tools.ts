@@ -1,11 +1,12 @@
 /**
  * Ferramentas MCP dedicadas à conexão com ChatGPT.
  *
- * Expõe 10 ferramentas com foco na operação segura de CRM e gestão de leads,
+ * Expõe ferramentas com foco na operação segura de CRM e gestão de leads,
  * garantindo isolamento multi-tenant, auditoria e preservação estrita do
  * mecanismo de atendimento humano (bloqueio do Xavier).
  */
 import { z } from "zod";
+import { prospectingReadTools } from "./prospecting-read";
 
 import {
   createLeadHandler,
@@ -2095,4 +2096,5 @@ export const chatGptTools: ReadonlyArray<McpToolDefinition> = [
   listPipelineStagesTool,
   upsertLeadContactTool,
   enrollLeadsInProspectingCampaignTool,
+  ...prospectingReadTools,
 ] as unknown as ReadonlyArray<McpToolDefinition>;

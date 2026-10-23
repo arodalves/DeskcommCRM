@@ -1,40 +1,8 @@
 import { PALAVRAS_DE_OPT_OUT } from "@/lib/opt-out/deteccao";
 
-/**
- * A SAÍDA, escrita na primeira mensagem fria.
- *
- * ## Por que isto existe
- *
- * A abordagem de prospecção chega a quem nunca falou com a empresa. Sem uma
- * saída oferecida, a saída que a pessoa usa é **Denunciar spam** — e essa é
- * invisível ao sistema: não gera mensagem de volta, `is_blocked` nunca é
- * gravado, o candidato fica `sent`, e o número queimado é o do CLIENTE que
- * instalou, não o nosso. A doutrina anti-banimento inteira do produto existe
- * para evitar exatamente esse desfecho.
- *
- * Havia uma ironia no código antes disto: `agent-setup.ts` manda o agente
- * RESPEITAR quem pedir para parar. Ninguém pede uma saída que nunca lhe foi
- * oferecida.
- *
- * ## Por que determinístico, e não escrito pelo modelo
- *
- * Duas razões, e as duas são de produção:
- *
- *   1. O texto do modelo varia com temperatura. Uma promessa legal que muda de
- *      redação a cada envio não é auditável — e é a mesma família do erro de
- *      pedir ao modelo que produza um identificador estável.
- *   2. A regra de opt-out deste produto é **ISOLADA**: ela só bloqueia palavra
- *      sozinha (a mensagem inteira é a palavra) ou verbo com objeto de
- *      comunicação. Um rodapé que dissesse "é só me avisar" não seria
- *      reconhecido por `lib/opt-out/deteccao.ts`, e a pessoa teria pedido para
- *      sair sem sair. O rodapé instrui **a resposta exata que o detector
- *      reconhece**.
- *
- * ## O laço fechado
- *
- * A palavra usada aqui é verificada contra `PALAVRAS_DE_OPT_OUT` em tempo de
- * execução, não por convenção: se alguém remover `parar` do detector, este
- * módulo deixa de prometer uma saída que não funciona mais.
+/** Texto de saída reutilizável. A saudação inicial não recebe este rodapé.
+ * A sequência comercial é orientada por sequencia-de-abordagem.ts após resposta humana.
+ * As palavras legadas seguem reconhecidas pelo detector para preservar opt-outs.
  */
 
 /** A palavra que a pessoa responde, por idioma. */
@@ -86,7 +54,7 @@ export function rodapeDeSaida(locale?: string | null): string {
 }
 
 /**
- * O corpo final da abordagem: o texto do modelo + a saída.
+ * Composição explícita de texto com saída; não é a composição da saudação inicial.
  *
  * Idempotente de propósito — se o texto do modelo já terminar com o rodapé (por
  * exemplo porque alguém pôs a instrução no prompt também), não duplica. Repetir

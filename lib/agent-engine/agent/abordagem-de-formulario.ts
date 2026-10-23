@@ -164,7 +164,7 @@ export function blocoDeModo(
       "- Termine com UMA pergunta aberta, para ela ter o que responder.",
     ],
     prospeccao_fria: [
-      "- Diga em uma frase quem é você e por que está falando com ela, SEM sugerir que ela procurou vocês.",
+      "- Nesta primeira abordagem, faça apenas uma saudação breve e pergunte com quem está falando. A identidade, o motivo comercial e a opção natural de recusa serão informados após resposta humana; não acrescente rodapé nem peça comando artificial aqui.",
       "- Os dados são públicos e comerciais (nome do negócio, ramo, endereço). NÃO diga nem insinue que ela preencheu, pediu, baixou ou se cadastrou em qualquer coisa.",
       "- NÃO invente histórico, interesse, indicação ou contato anterior. Não existe nenhum.",
       "- NÃO repita os dados em forma de lista de volta para ela, e não demonstre saber mais do que o nome do negócio e o ramo.",

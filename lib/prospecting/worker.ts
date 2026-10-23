@@ -11,11 +11,9 @@ import {
 import { gerarAbordagemDeFormulario } from "@/lib/agent-engine/agent/abordagem-de-formulario";
 import { llmEdgeConfigFromEnv } from "@/lib/agent-engine/edge/llm/credentials";
 import { assertServiceBoundarySupabase } from "@/lib/atendimento/origem";
-import { comSaida } from "./rodape-de-saida";
-import {
-  proximoEnvioDaEsteiraFria,
-  tetoDiarioDaEsteiraFria,
-} from "./ritmo-da-esteira-fria";
+import { primeiraAbordagem } from "./sequencia-de-abordagem";
+import { saudacaoNoEnvio } from "./saudacao-no-envio";
+import { proximoEnvioDaEsteiraFria, tetoDiarioDaEsteiraFria } from "./ritmo-da-esteira-fria";
 import { parseServiceBoundary } from "@/lib/atendimento/fronteira";
 import { autorizarContatoParaIA } from "@/lib/ai/elegibilidade/autorizacao";
 import { decidirPreGoLiveDoCanalViaSupabase } from "@/lib/ai/elegibilidade/consulta-pre-go-live";
@@ -174,10 +172,9 @@ export async function sendNextCandidate(
   // ritmo anti-banimento, então não há volume aqui para otimizar.
   const locale =
     (
-      await db.query<{ locale: string | null }>(
-        "select locale from organizations where id=$1",
-        [c.organization_id],
-      )
+      await db.query<{ locale: string | null }>("select locale from organizations where id=$1", [
+        c.organization_id,
+      ])
     ).rows[0]?.locale ?? null;
   const boundary = parseServiceBoundary(p.service_boundary);
   if (!boundary || !p.contact_id || !p.conversation_id)
@@ -200,11 +197,7 @@ export async function sendNextCandidate(
     // furar o intervalo mínimo que o operador configurou.
     await db.query(
       "update prospecting_campaigns set next_send_at=$3 where organization_id=$1 and id=$2",
-      [
-        c.organization_id,
-        c.id,
-        proximoEnvioDaEsteiraFria(new Date(), cfg.interval_minutes, knobs),
-      ],
+      [c.organization_id, c.id, proximoEnvioDaEsteiraFria(new Date(), cfg.interval_minutes, knobs)],
     );
     // Reserve the shared channel budget before the external effect, including uncertain attempts.
     await recordSend(db, c.organization_id, cfg.channel_session_id, now);
@@ -233,7 +226,7 @@ export async function sendNextCandidate(
       tenantId: c.organization_id,
       agentId: cfg.agent_id,
       leadId: p.contact_id,
-      instrucao: `${cfg.instruction}\nFaça uma primeira abordagem curta e transparente. Os dados vieram de pesquisa pública, não de um formulário preenchido pela pessoa. Não invente familiaridade, resultados ou interesse. Uma pergunta por vez. Critérios a confirmar durante a conversa: ${cfg.qualification}`,
+      instrucao: `${cfg.instruction}\nFaça somente uma saudação breve e natural e pergunte com quem está falando. Não inclua apresentação comercial nem aviso de saída nesta saudação; a apresentação transparente, o motivo comercial e a opção natural de recusa serão feitos após resposta humana. Os dados vieram de pesquisa pública, não de um formulário preenchido pela pessoa. Não invente familiaridade, resultados ou interesse. Uma pergunta por vez. Critérios a confirmar durante a conversa: ${cfg.qualification}`,
       origem: "Pesquisa de empresas",
       // NÃO é `automacao`: a pessoa não entrou em funil nenhum. O prompt do
       // ramo frio é o único que proíbe afirmar preenchimento — ver blocoDeModo.
@@ -282,13 +275,7 @@ export async function sendNextCandidate(
       {
         conversation_id: p.conversation_id,
         type: "text",
-        // A SAÍDA vai junto da primeira mensagem, e é montada aqui — não pedida
-        // ao modelo. Sem ela, a saída que a pessoa usa é "Denunciar spam", que
-        // é invisível ao sistema e queima o número do CLIENTE que instalou.
-        // O idioma sai de `organizations.locale`: um rodapé em português numa
-        // instalação em espanhol oferece uma palavra que a pessoa não responde,
-        // e o detector de opt-out só reconhece a palavra ISOLADA.
-        body: comSaida(generated.texto, locale),
+        body: primeiraAbordagem(saudacaoNoEnvio(generated.texto, new Date()), locale),
       },
     );
     const sent = ["sent", "delivered", "read"].includes(message.status);
@@ -301,11 +288,7 @@ export async function sendNextCandidate(
       );
       await db.query(
         "update prospecting_candidates set status='failed',error=$3,updated_at=now() where organization_id=$1 and id=$2",
-        [
-          c.organization_id,
-          p.id,
-          "Envio não confirmado. Consulte a conversa antes de reenviar.",
-        ],
+        [c.organization_id, p.id, "Envio não confirmado. Consulte a conversa antes de reenviar."],
       );
     } else {
       await db.query(
@@ -482,8 +465,7 @@ export async function tickProspecting(pool: pg.Pool, admin: SupabaseClient) {
             // busca e o envio, uma instabilidade de um segundo no provedor — e a
             // lista só voltava se alguém abrisse a tela e retomasse à mão. É o
             // oposto do que a casa faz em todo lugar: item ruim marca o ITEM.
-            const doCandidato =
-              error instanceof ProspectingError && error.escopo === "candidato";
+            const doCandidato = error instanceof ProspectingError && error.escopo === "candidato";
             const motivo =
               error instanceof ProspectingError
                 ? error.message

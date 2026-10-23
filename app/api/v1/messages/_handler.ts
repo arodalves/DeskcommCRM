@@ -1185,6 +1185,7 @@ export async function sendMessageHandler(
           providerConversationId: c.provider_conversation_id,
           kind: input.type,
           body: corpoDoCanal(input.body ?? "") ?? "",
+          prospectingGreeting: Boolean(ctx.prospectingDelivery),
           replyToExternalId: citada?.external_id ?? null,
         }));
       }

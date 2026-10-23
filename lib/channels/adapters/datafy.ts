@@ -1,3 +1,4 @@
+import { saudacaoNoEnvio } from "@/lib/prospecting/saudacao-no-envio";
 /**
  * Adapter do canal Datafy — o transporte do parceiro que espelha a Cloud API
  * (recorte do PR #1130, de @vgamkt).
@@ -159,6 +160,9 @@ export const datafyAdapter: ChannelAdapter = {
       { type: "text", text: { body: envelope.body ?? "" } };
 
     await envelope.beforeSend?.();
+    if (envelope.prospectingGreeting && corpo.type === "text" && "text" in corpo) {
+      corpo.text = { body: saudacaoNoEnvio(envelope.body ?? "", new Date()) };
+    }
     const res = await fetch(
       `${graphPartnerGraphBase()}/${encodeURIComponent(creds.phoneNumberId)}/messages`,
       {

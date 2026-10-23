@@ -1,3 +1,4 @@
+import { saudacaoNoEnvio } from "@/lib/prospecting/saudacao-no-envio";
 /**
  * Adapter WAHA — o primeiro `ChannelAdapter`, e de propósito o mais burro
  * possível: cada método delega ao `lib/waha/*` que já existe e já é testado.
@@ -302,7 +303,7 @@ export const wahaAdapter: ChannelAdapter = {
       res = await client.sendMessage(
         envelope.sessionRef,
         to,
-        envelope.body ?? "",
+        envelope.prospectingGreeting ? saudacaoNoEnvio(envelope.body ?? "", new Date()) : envelope.body ?? "",
         // A citação é enfeite da conversa, nunca condição de envio: quando não
         // há, o envio segue igual. Ver `OutboundEnvelope.replyToExternalId`.
         envelope.replyToExternalId ? idCompletoDaMensagem(envelope.replyToExternalId, to) : null,

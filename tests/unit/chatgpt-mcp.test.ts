@@ -37,7 +37,7 @@ function mockCtx(supabaseMock: unknown): McpContext {
 }
 
 describe("ChatGPT MCP Tools - Catálogo e Configuração", () => {
-  it("expõe exatamente as 12 ferramentas operacionais solicitadas", () => {
+  it("preserva as ferramentas operacionais e acrescenta as quatro consultas", () => {
     const toolNames = chatGptTools.map((t) => t.name);
     expect(toolNames).toEqual([
       "search_leads",
@@ -52,6 +52,10 @@ describe("ChatGPT MCP Tools - Catálogo e Configuração", () => {
       "list_pipeline_stages",
       "upsert_lead_contact",
       "enroll_leads_in_prospecting_campaign",
+      "list_prospecting_campaigns",
+      "list_campaign_conversations",
+      "get_lead_conversation",
+      "get_campaign_prospecting_summary",
     ]);
   });
 });
@@ -1544,7 +1548,8 @@ describe("ChatGPT MCP Tools - enroll_leads_in_prospecting_campaign", () => {
   }
 
   const callEnroll = async (input: unknown, ctx: McpContext) => {
-    return (await enrollLeadsInProspectingCampaignTool.handler(input as never, ctx)) as Record<string, any>;
+    return (await enrollLeadsInProspectingCampaignTool.handler(input as never, ctx)) as
+      Record<string, unknown> & { results: Array<Record<string, unknown>> };
   };
 
   it("1. lead válido + campanha válida → inscrito com sucesso", async () => {
@@ -1584,7 +1589,7 @@ describe("ChatGPT MCP Tools - enroll_leads_in_prospecting_campaign", () => {
 
     expect(res.total_requested).toBe(2);
     expect(res.enrolled).toBe(2);
-    expect(res.results.map((r: any) => r.result)).toEqual(["enrolled", "enrolled"]);
+    expect(res.results.map((r) => r.result)).toEqual(["enrolled", "enrolled"]);
     expect(mockDb.insertedCandidates.length).toBe(2);
   });
 

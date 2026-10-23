@@ -120,6 +120,8 @@ export interface ChannelTenantScope {
 }
 
 export interface OutboundEnvelope extends ChannelTenantScope {
+  /** Apenas primeira abordagem fria, definido pelo contexto interno de envio. */
+  prospectingGreeting?: boolean;
   /** Callback interno: revalida a origem depois do preparo assíncrono e antes do transporte. */
   beforeSend?: () => Promise<void>;
   /** Identificador da sessão/número no provider (WAHA: nome da sessão). */

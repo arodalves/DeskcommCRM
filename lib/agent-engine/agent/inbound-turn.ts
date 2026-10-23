@@ -2453,7 +2453,7 @@ async function executarTurnoDoAgente(
       (async () => {
         const prospectingContext =
           !preview && input.conversationId
-            ? await prospectingConversationContext(pool, tenantId, input.conversationId)
+            ? await prospectingConversationContext(pool, tenantId, input.conversationId, agentConfig?.agentId, input.channelSessionId)
             : '';
         return loadPlaybook(
           pool,

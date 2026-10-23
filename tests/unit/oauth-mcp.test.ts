@@ -785,12 +785,12 @@ describe("OAuth 2.1 — Resolução de Identidade e Permissões no Servidor MCP"
     expect(() => ensureScope(scopes, "mcp:write")).toThrow(/Token missing required scope 'mcp:write'/);
   });
 
-  it("preserva o catálogo das 12 ferramentas do ChatGPT sem ampliação indevida de permissões", () => {
-    expect(chatGptTools.length).toBe(12);
+  it("preserva as permissões existentes e acrescenta quatro consultas somente leitura", () => {
+    expect(chatGptTools.length).toBe(16);
     const readTools = chatGptTools.filter((t) => t.category === "read");
     const writeTools = chatGptTools.filter((t) => t.category === "write");
 
-    expect(readTools.length).toBe(4);
+    expect(readTools.length).toBe(8);
     expect(writeTools.length).toBe(8);
 
     for (const rt of readTools) {

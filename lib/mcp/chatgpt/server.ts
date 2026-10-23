@@ -2,7 +2,7 @@
  * Servidor MCP dedicado para conexão do ChatGPT.
  *
  * Utiliza o SDK oficial @modelcontextprotocol/sdk com WebStandardStreamableHTTPServerTransport.
- * Registra exclusivamente as 12 ferramentas operacionais do CRM.
+ * Registra o catálogo operacional e as consultas comerciais do CRM.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { z } from "zod";
@@ -36,6 +36,7 @@ export function createChatGptMcpServer(
       {
         description: tool.description,
         inputSchema: tool.inputSchema,
+        annotations: { readOnlyHint: tool.category === "read" },
       },
       async (rawArgs) => {
         const startedAt = Date.now();
