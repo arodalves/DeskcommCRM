@@ -158,6 +158,7 @@ jobs:
           docker run -d --name smoke-worker --network host \
             -e SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres \
             -e NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321 \
+            -e NEXT_PUBLIC_SUPABASE_ANON_KEY=ci-only-anon-key \
             -e SUPABASE_SERVICE_ROLE_KEY=ci-only-no-production \
             -e SENTRY_DSN=off "$IMAGE"
           trap 'docker logs smoke-worker; docker rm -f smoke-worker smoke-pg >/dev/null 2>&1 || true' EXIT
