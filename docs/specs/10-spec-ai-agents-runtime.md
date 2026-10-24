@@ -934,3 +934,26 @@ Cada run emite, em JSON:
 - Spec 03 — WAHA: `channel_sessions`, webhook handler estendido em §4.6
 - Spec 07 — Events/Workers: novo cron `agent-dispatcher` segue padrão existente
 - Spec 01 — Platform Base: RLS via `fn_user_org_ids()`, audit log via `fn_audit_log_row()`
+
+
+### Sequência de apresentação na prospecção
+
+A saudação inicial é breve e não recebe o rodapé de saída. O contexto da campanha,
+somente após comprovar campanha, agente e conexão da conversa vinculados e a
+abordagem inicial em estado sent/delivered/read, orienta a apresentação da identidade real e do
+motivo comercial após resposta humana, com opção natural de recusa sem comando
+artificial. Respostas automáticas não antecipam essa apresentação. Avisos já
+enviados e confirmados (sent/delivered/read), inclusive no fluxo legado, não devem
+ser repetidos. Avisos em mensagens falhas, pendentes ou sem status não contam.
+Textos operacionais sobre não conseguir contato não são avisos de saída.
+O contexto não se aplica a atendimento receptivo sem candidato nem a canais
+que exigem templates fora da janela, como a API oficial da Meta. Nenhum nome ou
+ID de agente ou telefone é fixado no código. As regras de base
+legal, exclusões, opt-out, intervenção humana, capacidades do canal e campanha
+pausada continuam valendo antes de qualquer envio.
+
+Destino: núcleo, pois corrige a composição e o contexto da cadeia nativa de
+prospecção. Consumidores: worker de prospecção e contexto do turno inbound;
+evidência operacional: mensagem na Inbox e auditoria `prospecting.approach_sent`
+existentes. Não cria conexão, tela, fila nem mecanismo de reativação. Falhas de
+leitura do histórico não autorizam inferir resposta humana ou repetir apresentação.

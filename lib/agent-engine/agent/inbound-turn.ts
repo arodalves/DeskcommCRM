@@ -1,3 +1,4 @@
+import { aplicarRecusaDeProspeccao } from "@/lib/prospecting/recusa";
 import { prospectingConversationContext } from "@/lib/prospecting/context";
 import { setExecutionAgentOperation } from '@/lib/atendimento/fronteira-server';
 import { TIPOS_DE_CASO, TIPOS_DE_CASO_PARA_A_IA } from "@/lib/ai/case-copy";
@@ -2453,7 +2454,7 @@ async function executarTurnoDoAgente(
       (async () => {
         const prospectingContext =
           !preview && input.conversationId
-            ? await prospectingConversationContext(pool, tenantId, input.conversationId)
+            ? await prospectingConversationContext(pool, tenantId, input.conversationId, agentConfig?.agentId, input.channelSessionId)
             : '';
         return loadPlaybook(
           pool,
@@ -2724,6 +2725,12 @@ async function executarTurnoDoAgente(
         (await getCaseAwaitingLead(pool, tenantId, input.conversationId)) !== null,
       leadEmHandoffHumano: estadoDaConversa.temAtendenteHumano,
     });
+
+    if (await aplicarRecusaDeProspeccao(pool, {
+      org: tenantId, contactId: leadId, conversationId: input.conversationId,
+      agentId: agentConfig?.agentId, channelId: input.channelSessionId,
+      texto: mensagemDoJob, requestId: liveJob().id,
+    })) return;
 
     if (decisaoRelevancia.acao === 'encerrar_por_recusa') {
       await executarEncerramentoPorRecusa(pool, {

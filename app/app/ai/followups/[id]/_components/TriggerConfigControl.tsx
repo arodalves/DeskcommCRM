@@ -72,7 +72,9 @@ type TriggerKind =
   | "case_opened"
   | "webhook"
   | "inbound_after_silence"
-  | "lead_created";
+  | "lead_created"
+  | "prospecting_initial_accepted"
+  | "prospecting_conversation_interrupted";
 
 interface TriggerFormState {
   kind: TriggerKind;
@@ -89,6 +91,7 @@ interface TriggerFormState {
   stageId: string;
   cancelOnReply: boolean;
   eventTypeIds: string[];
+  campaignIds: string[];
 }
 
 const DEFAULT_THRESHOLD_MINUTES = 60;
@@ -98,6 +101,8 @@ const MAX_PAUSA_HORAS = MAX_PAUSA_DE_REENTRADA_MINUTES / 60;
 const MAX_SILENCIO_MINUTOS = 10_080;
 
 const KIND_LABEL: Record<TriggerKind, string> = {
+  prospecting_initial_accepted: "Prospecção — primeira abordagem aceita",
+  prospecting_conversation_interrupted: "Prospecção — conversa comercial interrompida",
   appointment_no_show:"Falta confirmada pela equipe",
   manual: "Manual",
   silence: "Silêncio",
@@ -122,7 +127,9 @@ function parseTriggerConfig(raw: Record<string, unknown>): TriggerFormState {
   // botão de cancelar-na-resposta. Agora só os kinds que este painel sabe EDITAR
   // caem no formulário; o resto é preservado (ver `open` no componente).
   const kind: TriggerKind =
-    raw.kind === "appointment_no_show"
+    raw.kind === "prospecting_initial_accepted" || raw.kind === "prospecting_conversation_interrupted"
+      ? raw.kind
+      : raw.kind === "appointment_no_show"
       ? "appointment_no_show"
       : raw.kind === "silence"
         ? "silence"
@@ -139,6 +146,7 @@ function parseTriggerConfig(raw: Record<string, unknown>): TriggerFormState {
                   : "manual";
   const params =
     (raw.params as {
+      campaign_ids?: string[];
       threshold_minutes?: number;
       segments?: string[];
       stage_id?: string;
@@ -154,6 +162,7 @@ function parseTriggerConfig(raw: Record<string, unknown>): TriggerFormState {
   const tela = limiarDaTela(minutosRetorno);
   return {
     kind,
+    campaignIds: params.campaign_ids ?? [],
     eventTypeIds: Array.isArray(params.event_type_ids) ? params.event_type_ids : [],
     thresholdMinutes:
       kind === "silence" && typeof params.threshold_minutes === "number"
@@ -176,6 +185,9 @@ function parseTriggerConfig(raw: Record<string, unknown>): TriggerFormState {
 }
 
 function toTriggerConfig(form: TriggerFormState): Record<string, unknown> {
+  if (form.kind === "prospecting_initial_accepted" || form.kind === "prospecting_conversation_interrupted") {
+    return { kind: form.kind, params: { campaign_ids: form.campaignIds }, cancel_on_reply: true };
+  }
   const cancelOnReply = form.cancelOnReply ? { cancel_on_reply: true } : {};
   if (form.kind === "appointment_no_show") return {kind:"appointment_no_show",params:{event_type_ids:form.eventTypeIds}};
   if (form.kind === "manual") return { kind: "manual", ...cancelOnReply };
@@ -226,6 +238,7 @@ function summaryLabel(
   etapa: { stageName: string; pipelineName: string } | null,
   t: (texto: string) => string = (texto) => texto,
 ): string {
+  if (cfg.kind === "prospecting_initial_accepted" || cfg.kind === "prospecting_conversation_interrupted") return `${t("Gatilho")}: ${t(KIND_LABEL[cfg.kind])}`;
   if(cfg.kind === "appointment_no_show") return t("Gatilho: falta confirmada pela equipe");
   if (cfg.kind === "silence") {
     const params = cfg.params as
@@ -393,6 +406,8 @@ export function TriggerConfigControl({ flowId, triggerConfig }: Props) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="prospecting_initial_accepted">{t(KIND_LABEL.prospecting_initial_accepted)}</SelectItem>
+                <SelectItem value="prospecting_conversation_interrupted">{t(KIND_LABEL.prospecting_conversation_interrupted)}</SelectItem>
                 <SelectItem value="manual">{t(KIND_LABEL.manual)}</SelectItem>
                 <SelectItem value="silence">{t(KIND_LABEL.silence)}</SelectItem>
                 <SelectItem value="stage_change">{t(KIND_LABEL.stage_change)}</SelectItem>

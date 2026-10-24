@@ -1200,3 +1200,17 @@ describe("turno descartado pela suspensão (migration 0501)", () => {
     expect(rechecksOciososDaAcao([...antes, ev("turn_discarded"), ev("turn_enqueued")], "a1")).toBe(1);
   });
 });
+
+
+describe("primeira espera de prospecção conta do aceite, uma única vez", () => {
+  it("respeita os 2 dias úteis publicados mesmo com dreno atrasado", () => {
+    const r=processNode({
+      node:{id:"wait",type:"wait",label:"Esperar",position:{x:0,y:0},config:{mode:"business_days",days:2,timezone:"America/Sao_Paulo"}},
+      edges:[edge({source:"wait",target:"send",condition:{type:"always"}})],
+      enrollment:enrollment({steps_taken:1,prospecting_accepted_at:"2026-10-22T13:00:00Z"}),
+      lead:lead(), clock:()=>new Date("2026-10-23T13:00:00Z"),
+    });
+    expect(r.kind).toBe("wait");
+    if(r.kind==="wait")expect(r.next_eval_at.toISOString()).toBe("2026-10-26T13:00:00.000Z");
+  });
+});

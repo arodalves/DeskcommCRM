@@ -5,7 +5,7 @@ import {
 } from "@/lib/agent-engine/guardrails/lgpd/legal-basis";
 import { ProspectingError } from "./provider";
 import { checarExclusaoDeProspeccao } from "./exclusions";
-import { ehRespostaAutomatica } from "./resposta-automatica";
+import { sinaisComerciais } from "./sinais-comerciais";
 
 export interface ProspectingDelivery {
   organizationId: string;
@@ -51,6 +51,7 @@ export async function assertProspectingDelivery(db: SupabaseClient, ctx: Prospec
 
   // Verificação de exclusão estrutural e dos 7 leads manuais protegidos
   const candidateData = (candidate.data ?? {}) as Record<string, unknown>;
+  if (candidateData.commercial_refusal) throw new ProspectingError("Abordagem recusada anteriormente.", 409, "candidato");
   const exclusao = await checarExclusaoDeProspeccao(db, {
     organizationId: ctx.organizationId,
     leadId: candidate.lead_id,
@@ -146,7 +147,7 @@ export async function assertProspectingFollowupPreconditions(
   // 1. Carregar enrollment
   const { data: enrollment, error: enrErr } = await db
     .from("followup_enrollments")
-    .select("id, organization_id, contact_id, conversation_id, status, pointer_id, prospecting_candidate_id, prospecting_campaign_id, prospecting_accepted_at, prospecting_last_outbound_at, started_at")
+    .select("id, organization_id, contact_id, conversation_id, status, agent_id, pointer_id, prospecting_candidate_id, prospecting_campaign_id, prospecting_accepted_at, prospecting_last_outbound_at, started_at")
     .eq("organization_id", organizationId)
     .eq("id", enrollmentId)
     .maybeSingle();
@@ -186,7 +187,7 @@ export async function assertProspectingFollowupPreconditions(
   }
 
   // 3. Comprovação da primeira abordagem automática continua válida
-  if (candidate.status !== "sent" || !candidate.provider_accepted_at) {
+  if (candidate.status !== "sent" || !candidate.provider_accepted_at || (candidate.data as Record<string, unknown> | null)?.commercial_refusal) {
     return {
       ok: false,
       reason: "Primeira abordagem de prospecção não foi confirmada como aceita pelo provedor.",
@@ -203,7 +204,7 @@ export async function assertProspectingFollowupPreconditions(
       .eq("id", candidate.message_id)
       .maybeSingle();
 
-    if (msg && !["sent", "delivered", "read"].includes(msg.status)) {
+    if (!msg || !["sent", "delivered", "read"].includes(msg.status)) {
       return {
         ok: false,
         reason: "Mensagem da abordagem inicial não está em estado de entrega aceito.",
@@ -235,7 +236,7 @@ export async function assertProspectingFollowupPreconditions(
   if (candidate.campaign_id) {
     const { data: campaign } = await db
       .from("prospecting_campaigns")
-      .select("status, activated_at, activation_version")
+      .select("status, activated_at, activation_version, config")
       .eq("organization_id", organizationId)
       .eq("id", candidate.campaign_id)
       .maybeSingle();
@@ -260,10 +261,17 @@ export async function assertProspectingFollowupPreconditions(
     }
   }
 
+  const { data: scope } = await db.from("prospecting_campaigns").select("config")
+    .eq("organization_id", organizationId).eq("id", candidate.campaign_id).maybeSingle();
+  const config = scope?.config as { agent_id?: string; channel_session_id?: string } | undefined;
+  if (!config?.agent_id || config.agent_id !== enrollment.agent_id) {
+    return { ok: false, reason: "Agente da inscrição diverge da campanha.", terminal: true };
+  }
+
   // 6. Contato e permissões
   const { data: contact } = await db
     .from("contacts")
-    .select("is_blocked, force_human, is_anonymized, source, consent")
+    .select("is_blocked, ai_opt_out, force_human, is_anonymized, source, consent")
     .eq("organization_id", organizationId)
     .eq("id", candidate.contact_id)
     .maybeSingle();
@@ -276,7 +284,7 @@ export async function assertProspectingFollowupPreconditions(
     return { ok: false, reason: "Contato em atendimento humano obrigatório (force_human=true).", terminal: true };
   }
 
-  if (contact.is_blocked) {
+  if (contact.is_blocked || contact.ai_opt_out) {
     return { ok: false, reason: "Contato bloqueado no sistema.", terminal: true };
   }
 
@@ -293,12 +301,12 @@ export async function assertProspectingFollowupPreconditions(
   // 7. Conversa: resposta do cliente, atendimento humano e silêncio
   const { data: conv } = await db
     .from("conversations")
-    .select("status, last_inbound_at, last_outbound_at, assigned_to_user_id, bot_silenced_until")
+    .select("status, channel_session_id, active_ai_agent_id, last_inbound_at, last_outbound_at, assigned_to_user_id, bot_silenced_until")
     .eq("organization_id", organizationId)
     .eq("id", candidate.conversation_id)
     .maybeSingle();
 
-  if (!conv) {
+  if (!conv || conv.channel_session_id !== config.channel_session_id || conv.active_ai_agent_id !== config.agent_id) {
     return { ok: false, reason: "Conversa não encontrada.", terminal: true };
   }
 
@@ -351,14 +359,18 @@ export async function assertProspectingFollowupPreconditions(
       .eq("conversation_id", candidate.conversation_id)
       .eq("direction", "inbound")
       .gt("created_at", candidate.provider_accepted_at)
-      .limit(10);
+      .order("created_at", { ascending: false })
+      .limit(100);
 
     if (!previousInbound || previousInbound.length === 0) {
       return { ok: false, reason: "Prospect nunca respondeu à abordagem inicial.", terminal: true };
     }
 
+    if (previousInbound.some((msg) => sinaisComerciais(msg.body).recusa)) {
+      return { ok: false, reason: "Recusa comercial registrada no histórico.", terminal: true };
+    }
     const temRespostaHumana = previousInbound.some(
-      (msg) => !ehRespostaAutomatica(msg.body as string | null | undefined),
+      (msg) => sinaisComerciais(msg.body).interesse,
     );
     if (!temRespostaHumana) {
       return { ok: false, reason: "Prospect não respondeu com mensagem humana (apenas automática/ausência).", terminal: true };
@@ -418,10 +430,10 @@ export async function assertProspectingFollowupPreconditions(
       .eq("id", candidate.lead_id)
       .maybeSingle();
 
-    if (lead && ["lost", "won", "archived"].includes(lead.status)) {
+    if (!lead || ["lost", "won", "archived"].includes(lead.status)) {
       return {
         ok: false,
-        reason: `Oportunidade já encerrada (${lead.status}). Follow-up de prospecção cancelado.`,
+        reason: `Oportunidade já encerrada (${lead?.status ?? "desconhecido"}). Follow-up de prospecção cancelado.`,
         terminal: true,
       };
     }

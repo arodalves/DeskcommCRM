@@ -77,11 +77,13 @@ export function classificarNivelAutomacao(texto: string | null | undefined): Niv
   // NÍVEL 1 — Resposta automática simples
   // Ausência, horário de atendimento, retorno em breve, boas-vindas padronizadas
   if (
-    /nao estamos disponiveis|indisponivel|fora do horario|horario de atendimento|estamos ausentes/.test(limpo) ||
+    /nao estamos disponiveis|indisponivel|fora do horario|horario de atendimento|estamos ausentes|no momento nao (?:podemos|consigo) (?:atender|responder)|em breve (?:retornaremos|retornamos|responderemos)|assim que possivel.*(?:retorno|retornaremos|responderemos)/.test(limpo) ||
     /retornaremos.*breve|o mais breve possivel|assim que possivel retornaremos|logo retornaremos/.test(limpo) ||
     /deixe (seu nome|sua solicitacao|sua mensagem|seu recado)/.test(limpo) ||
     (/agradece(mos)? (pelo |o |seu )?contato|obrigad[ao] pel[oe] (seu )?contato/.test(limpo) &&
       /retornaremos|breve|atendimento|responder/.test(limpo)) ||
+    /agradece(mos)? (?:seu |o |pelo )?contato[.!\s]*(?:como podemos ajudar|em que podemos ajudar)/.test(limpo) ||
+    /assim que possivel retornarei/.test(limpo) ||
     /mensagem automatica|resposta automatica|atendimento automatico|atendimento eletronico|assistente virtual/.test(limpo)
   ) {
     return 1;

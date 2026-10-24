@@ -166,6 +166,7 @@ describe("Classificação de Níveis de Automação e Respostas Automáticas", (
           return Promise.resolve({
             rows: [
               {
+                provider: "waha",
                 config: {
                   agent_id: "210a010f-5837-458b-9a66-21fc9e5a65e3",
                   channel_session_id: "7b47b2c2-8b0a-4145-8890-d6c878bd96f7",
@@ -201,7 +202,13 @@ describe("Classificação de Níveis de Automação e Respostas Automáticas", (
       }),
     };
 
-    const ctx = await prospectingConversationContext(mockDb as unknown as Queryable, "org-uuid", "conv-uuid");
+    const ctx = await prospectingConversationContext(
+      mockDb as unknown as Queryable,
+      "org-uuid",
+      "conv-uuid",
+      "210a010f-5837-458b-9a66-21fc9e5a65e3",
+      "7b47b2c2-8b0a-4145-8890-d6c878bd96f7",
+    );
     expect(ctx).toContain("[ORIENTAÇÃO SITUACIONAL ANTI-LOOP]");
     expect(ctx).toContain("NÃO insista, NÃO envie novas mensagens e NÃO fique em loop com o bot");
   });
@@ -213,6 +220,7 @@ describe("Classificação de Níveis de Automação e Respostas Automáticas", (
           return Promise.resolve({
             rows: [
               {
+                provider: "waha",
                 config: {
                   agent_id: "210a010f-5837-458b-9a66-21fc9e5a65e3",
                   channel_session_id: "7b47b2c2-8b0a-4145-8890-d6c878bd96f7",
@@ -249,9 +257,17 @@ describe("Classificação de Níveis de Automação e Respostas Automáticas", (
       }),
     };
 
-    const ctx = await prospectingConversationContext(mockDb as unknown as Queryable, "org-uuid", "conv-uuid");
+    const ctx = await prospectingConversationContext(
+      mockDb as unknown as Queryable,
+      "org-uuid",
+      "conv-uuid",
+      "210a010f-5837-458b-9a66-21fc9e5a65e3",
+      "7b47b2c2-8b0a-4145-8890-d6c878bd96f7",
+    );
     expect(ctx).toContain("[ORIENTAÇÃO SITUACIONAL - NÍVEL 1 (BOAS-VINDAS / AUSÊNCIA / ESPERA)]");
     expect(ctx).toContain("Isso NÃO é recusa comercial e NÃO encerra a prospecção");
-    expect(ctx).toContain("NÃO encerre a conversa, NÃO qualifique ou desqualifique, NÃO considere rejeição");
+    expect(ctx).toContain(
+      "NÃO encerre a conversa, NÃO qualifique ou desqualifique, NÃO considere rejeição",
+    );
   });
 });

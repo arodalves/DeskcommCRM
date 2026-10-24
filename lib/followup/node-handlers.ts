@@ -81,6 +81,8 @@ export interface EnrollmentRow {
    * Ausente/`null` = enrollment de antes da feature ⇒ comportamento anterior.
    */
   timing_plan?: unknown;
+  prospecting_accepted_at?: string | null;
+  prospecting_last_outbound_at?: string | null;
 }
 
 /** Minimal typed facts a `condition` node can check — loaded by the engine, never guessed. */
@@ -630,7 +632,11 @@ export function processNode(input: {
       }
       if (!waitElapsed) {
         if (node.config.mode === "business_days") {
-          const nextEval = adicionarDiasUteis(clock(), node.config.days, {
+          const origem = enrollment.steps_taken === 1
+            ? enrollment.prospecting_last_outbound_at ?? enrollment.prospecting_accepted_at
+            : null;
+          const base = origem && Number.isFinite(Date.parse(origem)) ? new Date(origem) : clock();
+          const nextEval = adicionarDiasUteis(base, node.config.days, {
             timezone: node.config.timezone,
             inicioJanela: node.config.window_start_hour,
             fimJanela: node.config.window_end_hour,

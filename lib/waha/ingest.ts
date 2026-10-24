@@ -1356,7 +1356,10 @@ async function handleOutboundFromUserPhone(
     .in("external_id", idCandidates)
     .limit(1)
     .maybeSingle();
-  if (jaRegistrada) return; // nasceu no envio; quem atualiza o status é o ack
+  if (jaRegistrada) {
+    if (p.ack != null) await handleAck(admin, session, p);
+    return;
+  } // Eco também pode carregar evidência de entrega.
 
   // O desvio de GRUPO mora aqui, DEPOIS do dedup do eco e ANTES de qualquer
   // efeito da conversa individual (contato, pausa da IA, audit).
@@ -1415,7 +1418,9 @@ async function handleOutboundFromUserPhone(
       external_id: bare,
       type: resolveMessageType(p),
       direction: "outbound",
-      status: "sent",
+      status: p.ack == null ? "sent" : ackToStatus(p.ack),
+      ...(p.ack != null && p.ack >= 2 ? { delivered_at: now } : {}),
+      ...(p.ack != null && p.ack >= 3 ? { read_at: now } : {}),
       ack: p.ack ?? null,
       body: bodyOf(p),
       media_url: mediaUrlOf(p),
@@ -1604,26 +1609,43 @@ async function handleOutboundFromUserPhone(
 }
 
 async function handleAck(admin: Admin, session: Session, p: WahaPayload): Promise<void> {
-  if (!p.id) return;
-  const ack = p.ack ?? 0;
+  if (p.fromMe === false || !p.id || p.ack == null || !Number.isInteger(p.ack) || p.ack < 1) return;
+  const ack = p.ack;
   const status = ackToStatus(ack);
   const now = new Date().toISOString();
 
-  const update: Record<string, unknown> = { ack, status };
-  if (ack >= 2) update.delivered_at = now;
-  if (ack >= 3) update.read_at = now;
-
-  // O ack do WAHA 2026.x vem como `{fromMe}_{chatId}_{bareId}`. O NOWEB grava
-  // `external_id` = bareId (id interno), o WEBJS grava o `_serialized` completo.
-  // Casar as duas formas cobre ambos os engines sem tocar no external_id de
-  // inbound (que é full e sustenta o dedup 23505).
   const bare = bareWaMessageId(p.id);
   const candidates = bare === p.id ? [p.id] : [p.id, bare];
-  await admin
+  const { data: existing, error: lookupError } = await admin.from("messages")
+    .select("id,ack,status,delivered_at,read_at")
+    .eq("organization_id", session.organization_id)
+    .eq("channel_session_id", session.id)
+    .eq("direction", "outbound")
+    .in("external_id", candidates).limit(1).maybeSingle();
+  if (lookupError) lancarFalhaDeIngestao("messages.select ack", lookupError);
+  if (!existing) {
+    // ACK pode ultrapassar o INSERT do message.any. O replay existente precisa
+    // receber erro transitório, nunca um sucesso sem atualizar linha nenhuma.
+    if (p.fromMe === true || p.id.startsWith("true_")) {
+      lancarFalhaDeIngestao("messages.ack antes da mensagem", { code: "40001", message: "Aguardando correlação da mensagem outbound." });
+    }
+    return;
+  }
+  const knownAck = existing.status === "read" ? 3 : existing.status === "delivered" ? 2 : -1;
+  if (Math.max(existing.ack ?? -1, knownAck) >= ack) return;
+  const update: Record<string, unknown> = { ack, status };
+  if (ack >= 2) update.delivered_at = existing.delivered_at ?? now;
+  if (ack >= 3) update.read_at = existing.read_at ?? now;
+
+  const { error } = await admin
     .from("messages")
     .update(update)
     .eq("organization_id", session.organization_id)
+    .eq("channel_session_id", session.id)
+    .eq("direction", "outbound")
+    .or(`ack.is.null,ack.lt.${ack}`)
     .in("external_id", candidates);
+  if (error) lancarFalhaDeIngestao("messages.update ack", error);
 }
 
 /**

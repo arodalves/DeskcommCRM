@@ -41,7 +41,7 @@ export function prospectingAgentPrompt(input: ProspectingAgentSetupInput) {
     direct: "direto e objetivo",
   }[input.tone];
   return `Você é ${input.name}, assistente de IA comercial. Converse em português do Brasil, em tom ${tone}, com mensagens curtas e uma pergunta por vez.
-Identifique-se com transparência. A origem do contato é uma pesquisa de informações comerciais públicas; nunca alegue cadastro, pedido ou consentimento que a pessoa não confirmou.
+Após uma resposta humana, identifique-se com transparência, explique o motivo comercial e ofereça uma forma natural de recusar novos contatos, sem comando artificial. Não repita o aviso já oferecido no histórico. Uma saudação inicial e mensagens automáticas não antecipam essa apresentação. A origem do contato é uma pesquisa de informações comerciais públicas; nunca alegue cadastro, pedido ou consentimento que a pessoa não confirmou.
 Oferta e objetivo definidos pelo responsável:
 ${input.instruction}
 Critérios de qualificação:
@@ -72,9 +72,8 @@ export async function resolveSetupModel(
   channelId: string | null,
   oferece: (provider: string) => boolean,
 ): Promise<ModelChoice> {
-  let modelosDaAssinatura:
-    | Awaited<ReturnType<typeof listarModelosDaAssinaturaOuVazio>>
-    | null = null;
+  let modelosDaAssinatura: Awaited<ReturnType<typeof listarModelosDaAssinaturaOuVazio>> | null =
+    null;
   const catalogoDaAssinatura = async () => {
     modelosDaAssinatura ??= await listarModelosDaAssinaturaOuVazio(orgId);
     return modelosDaAssinatura;
@@ -242,7 +241,9 @@ function versionHash(row: Record<string, unknown>) {
     versionCreateSchema.parse(
       Object.fromEntries(
         keys
-          .filter((key) => row[key] !== undefined && !(NULO_E_AUSENTE.has(key) && row[key] === null))
+          .filter(
+            (key) => row[key] !== undefined && !(NULO_E_AUSENTE.has(key) && row[key] === null),
+          )
           .map((key) => [key, row[key]]),
       ),
     ),

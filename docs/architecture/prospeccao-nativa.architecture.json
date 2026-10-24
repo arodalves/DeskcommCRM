@@ -114,6 +114,27 @@
       "col": 5,
       "type": "component",
       "label": "ElevenLabs Agents privado e teste no navegador"
+    },
+    {
+      "id": "commercial-signals",
+      "lane": "app",
+      "col": 6,
+      "type": "component",
+      "label": "Sinais determinísticos: automação, recusa e interesse"
+    },
+    {
+      "id": "prospecting-refusal",
+      "lane": "db",
+      "col": 7,
+      "type": "component",
+      "label": "Encerramento da abordagem e cancelamento dos retornos"
+    },
+    {
+      "id": "prospecting-followup",
+      "lane": "app",
+      "col": 7,
+      "type": "component",
+      "label": "Gatilhos: aceite inicial e conversa interrompida"
     }
   ],
   "edges": [
@@ -216,6 +237,46 @@
       "from": "candidates",
       "to": "inbox",
       "label": "crm-summary autorizado: contexto comercial e fontes no painel lateral"
+    },
+    {
+      "from": "inbox",
+      "to": "commercial-signals",
+      "label": "Mensagem recebida e histórico vinculado"
+    },
+    {
+      "from": "commercial-signals",
+      "to": "prospecting-refusal",
+      "label": "Recusa inequívoca da campanha de origem"
+    },
+    {
+      "from": "prospecting-refusal",
+      "to": "qualification",
+      "label": "encerraDemanda: motivo e evidência na timeline"
+    },
+    {
+      "from": "prospecting-refusal",
+      "to": "queue",
+      "label": "Marcador impede novas tentativas e cancela retornos"
+    },
+    {
+      "from": "commercial-signals",
+      "to": "operator",
+      "label": "Ambiguidade ou falha abre revisão na Central"
+    },
+    {
+      "from": "queue",
+      "to": "prospecting-followup",
+      "label": "Aceite registrado e evento na mesma transação"
+    },
+    {
+      "from": "commercial-signals",
+      "to": "prospecting-followup",
+      "label": "Interação comercial, sem recusa ou handoff"
+    },
+    {
+      "from": "prospecting-followup",
+      "to": "queue",
+      "label": "Espera do grafo e revalidação antes do efeito"
     }
   ]
 }

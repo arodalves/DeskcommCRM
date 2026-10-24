@@ -446,3 +446,13 @@ describe("precedência dos três candidatos a chat", () => {
     expect(rpcs.find((c) => c.fn === "fn_upsert_wa_contact")!.args.p_chat_id).toBe("5599888888888@c.us");
   });
 });
+
+
+it("mensagem manual com ACK DEVICE já nasce entregue; sem ACK não inventa entrega", async () => {
+  for (const ack of [undefined, 2, 3]) {
+    const {admin,messages}=bancoDeMentira();
+    await dispatchWahaEvent(admin as never,SESSION as never,envelope({...CELULAR_NOWEB,ack}),"req");
+    expect(messages[0]!.status).toBe(ack === 3 ? "read" : ack === 2 ? "delivered" : "sent");
+    expect(Boolean(messages[0]!.delivered_at)).toBe(ack !== undefined);
+  }
+});

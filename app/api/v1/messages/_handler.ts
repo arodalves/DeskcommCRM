@@ -1185,6 +1185,7 @@ export async function sendMessageHandler(
           providerConversationId: c.provider_conversation_id,
           kind: input.type,
           body: corpoDoCanal(input.body ?? "") ?? "",
+          prospectingGreeting: Boolean(ctx.prospectingDelivery),
           replyToExternalId: citada?.external_id ?? null,
         }));
       }
@@ -1232,9 +1233,8 @@ export async function sendMessageHandler(
         supabase
           .from("messages")
           .update({
-            status: "sent",
+            ...(adapter.provider !== "waha" ? { status: "sent", ack: 0 } : {}),
             ...(comId ? { external_id: idCanonico } : {}),
-            ack: 0,
             // Colunas só do template — é o que responde custo e conformidade de
             // janela depois, sem varrer jsonb.
             ...(input.type === "template"
@@ -1256,7 +1256,16 @@ export async function sendMessageHandler(
         ({ data: updated, error: erroAoMarcar } = await marcarEnviada(true));
         if (erroAoMarcar?.code === "23505") ({ data: updated } = await marcarEnviada(false));
       }
-      if (updated) message = updated as unknown as Message;
+      // Carimbo de aceite só avança mensagens ainda em voo. ACK pode ter vencido a corrida.
+      if (adapter.provider === "waha") {
+        await supabase.from("messages").update({ status: "sent", ack: 0 })
+          .eq("organization_id", ctx.organization_id).eq("id", message.id)
+          .in("status", ["queued", "sending"]).select(MSG_COLS).maybeSingle();
+        const { data: acceptedMessage } = await supabase.from("messages").select(MSG_COLS)
+          .eq("organization_id", ctx.organization_id).eq("id", message.id).maybeSingle();
+        if (acceptedMessage) message = acceptedMessage as unknown as Message;
+        else if (updated) message = updated as unknown as Message;
+      } else if (updated) message = updated as unknown as Message;
       }
     } catch (err) {
       if (err instanceof StaleServiceBoundaryError || err instanceof AgendaDeferredError || err instanceof ApprovedReplyReceiptPersistenceError) throw err;

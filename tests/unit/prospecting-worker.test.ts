@@ -148,6 +148,18 @@ describe("gradual outreach", () => {
     expect(mocks.guard).toHaveBeenCalledTimes(2);
     expect(db.query.mock.calls.some(([q]) => q.includes("attempted_at=now()"))).toBe(true);
   });
+  it("envia a saudação sem o rodapé que o modelo repetiu", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-23T18:00:00Z"));
+    const saudacao = "Olá, boa tarde! Tudo bem? Com quem eu falo, por gentileza?";
+    mocks.generate.mockResolvedValue({
+      ok: true,
+      texto: `${saudacao}\n\nCaso prefira não receber novos contatos, basta me avisar.`,
+    });
+    await sendNextCandidate({} as never, database() as never, {} as never, campaign);
+    expect(mocks.send.mock.calls[0]?.[2].body).toBe(saudacao);
+    vi.useRealTimers();
+  });
   /*
    * A TRILHA DA ABORDAGEM FRIA (LGPD adjacente).
    *
@@ -223,8 +235,8 @@ describe("gradual outreach", () => {
     expect(mocks.send).not.toHaveBeenCalled();
     // Sem tentativa e sem trilha: reagendou para a próxima abertura e voltou.
     expect(
-      db.query.mock.calls.some(
-        ([q]) => q.includes("update prospecting_campaigns set next_send_at=$3"),
+      db.query.mock.calls.some(([q]) =>
+        q.includes("update prospecting_campaigns set next_send_at=$3"),
       ),
     ).toBe(true);
     expect(mocks.audit).not.toHaveBeenCalled();
@@ -283,7 +295,9 @@ describe("tick da prospecção × organização que para no meio do envio", () =
     const base = database();
     const db = {
       query: vi.fn(async (sql: string) =>
-        sql.startsWith("select * from prospecting_campaigns where organization_id=$1 and status='running'")
+        sql.startsWith(
+          "select * from prospecting_campaigns where organization_id=$1 and status='running'",
+        )
           ? { rows: [campaign] }
           : base.query(sql),
       ),
@@ -394,18 +408,26 @@ describe("funil só no envio: a checagem do canal vem ANTES de criar qualquer co
   };
 
   it("canal que recusa a abordagem: a campanha pausa SEM ter deixado contato, negócio nem conversa", async () => {
-    mocks.preflight.mockResolvedValue({ permite: false, motivo: "telefone fora da lista liberada" });
+    mocks.preflight.mockResolvedValue({
+      permite: false,
+      motivo: "telefone fora da lista liberada",
+    });
     const db = database(undefined, naFila);
-    await expect(
-      sendNextCandidate({} as never, db as never, {} as never, noEnvio),
-    ).rejects.toThrow("O canal ainda não permite esta abordagem");
+    await expect(sendNextCandidate({} as never, db as never, {} as never, noEnvio)).rejects.toThrow(
+      "O canal ainda não permite esta abordagem",
+    );
     expect(mocks.prepare, "recusa do canal vem antes de qualquer criação").not.toHaveBeenCalled();
     expect(mocks.send).not.toHaveBeenCalled();
   });
 
   it("a checagem usa o telefone da empresa que ainda está só na fila", async () => {
     mocks.prepare.mockResolvedValue(candidate);
-    await sendNextCandidate({} as never, database(undefined, naFila) as never, {} as never, noEnvio);
+    await sendNextCandidate(
+      {} as never,
+      database(undefined, naFila) as never,
+      {} as never,
+      noEnvio,
+    );
     expect(mocks.preflight.mock.calls[0]?.[1]).toMatchObject({
       contactPhoneNumber: "+5511999990000",
     });

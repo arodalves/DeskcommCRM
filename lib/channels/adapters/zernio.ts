@@ -1,3 +1,4 @@
+import { saudacaoNoEnvio } from "@/lib/prospecting/saudacao-no-envio";
 /**
  * Adapter do canal intermediado — o transporte de um BSP.
  *
@@ -205,6 +206,9 @@ export const zernioAdapter: ChannelAdapter = {
     };
 
     await envelope.beforeSend?.();
+    if (envelope.prospectingGreeting && !envelope.media && typeof body.message === "string") {
+      body.message = saudacaoNoEnvio(body.message, new Date());
+    }
     const res = await fetch(url, {
       method: "POST",
       headers: {

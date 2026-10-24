@@ -410,6 +410,11 @@ export function criarDubleDoHandler(
                 capturas.filtros.messages!.push({ coluna, valor });
                 return cadeia;
               },
+              in: (coluna: string, valores: unknown[]) => {
+                filtros.push((r) => valores.includes(r[coluna]));
+                capturas.filtros.messages!.push({ coluna, valor: valores });
+                return cadeia;
+              },
               select: (colunas = "") => {
                 capturas.selects.messages!.push(colunas);
                 return cadeia;

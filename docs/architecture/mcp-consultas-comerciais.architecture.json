@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Consultas comerciais do MCP existente",
+    "subtitle": "Leitura por organização; evidência separada de interpretação",
+    "output": "mcp-consultas-comerciais.html",
+    "quality_profile": "standard"
+  },
+  "lanes": [
+    { "id": "data", "label": "Dados existentes" },
+    { "id": "mcp", "label": "MCP existente" },
+    { "id": "client", "label": "Consumidor" }
+  ],
+  "mainPath": ["database", "queries", "server", "chatgpt"],
+  "nodes": [
+    {
+      "id": "database",
+      "lane": "data",
+      "col": 0,
+      "type": "database",
+      "label": "Campanhas, candidatos, leads e mensagens",
+      "sublabel": "Filtros de organização em todos os JOINs"
+    },
+    {
+      "id": "queries",
+      "lane": "mcp",
+      "col": 1,
+      "type": "service",
+      "label": "prospecting-read.ts",
+      "sublabel": "Transação READ ONLY; cursor HMAC; timeout 8s"
+    },
+    {
+      "id": "server",
+      "lane": "mcp",
+      "col": 2,
+      "type": "service",
+      "label": "chatGptTools → /mcp",
+      "sublabel": "OAuth, papel, escopo e limites existentes"
+    },
+    {
+      "id": "chatgpt",
+      "lane": "client",
+      "col": 3,
+      "type": "service",
+      "label": "ChatGPT: Fluxalvo CRM v1.2",
+      "sublabel": "Resumo e histórico; nenhuma ação sobre agentes"
+    },
+    {
+      "id": "audit",
+      "lane": "data",
+      "col": 3,
+      "type": "database",
+      "label": "api_audit_log",
+      "sublabel": "Argumentos redigidos; sem texto, nomes ou cursores"
+    }
+  ],
+  "edges": [
+    { "from": "database", "to": "queries", "label": "SELECT parametrizado" },
+    { "from": "queries", "to": "server", "label": "Quatro ferramentas de leitura" },
+    { "from": "server", "to": "chatgpt", "label": "tools/list e tools/call" },
+    { "from": "server", "to": "audit", "label": "auditMcpToolCall" }
+  ]
+}

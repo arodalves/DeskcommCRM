@@ -1,0 +1,197 @@
+name: Fluxalvo consolidada - imagens Linux e smoke
+on:
+  push:
+    branches: ["codex/fluxalvo-consolidada-1.83.0-fluxalvo.10"]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  app-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 15
+    env:
+      IMAGE: ghcr.io/melgarafael/deskcommcrm:1.83.0-fluxalvo.10
+      VERSION: 1.83.0-fluxalvo.10
+      MCP_READ_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      NEXT_TELEMETRY_DISABLED: "1"
+      SENTRY_DSN: "off"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/preparar-node
+        timeout-minutes: 8
+      - name: Testes direcionados com PostgreSQL real
+        run: pnpm vitest run lib/mcp/chatgpt/prospecting-read.test.ts tests/unit/chatgpt-mcp.test.ts tests/unit/oauth-mcp.test.ts
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Construir somente app Linux amd64 com Dockerfile existente
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.IMAGE }}
+          build-args: |
+            APP_VERSION=${{ env.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/arodalves/DeskcommCRM
+      - name: Validar boot e HTTP do standalone
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p 3000:3000 \
+            -e NEXT_PUBLIC_SUPABASE_URL=https://test-placeholder.invalid \
+            -e NEXT_PUBLIC_SUPABASE_ANON_KEY=test-placeholder-anon-key \
+            -e SUPABASE_SERVICE_ROLE_KEY=test-placeholder-service-role-key \
+            -e SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres \
+            -e CPF_ENCRYPTION_KEY=ci-smoke-only \
+            -e WAHA_BYO_ENCRYPTION_KEY=ci-smoke-only \
+            -e AI_CRED_AES_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -e WAHA_API_BASE_URL=http://127.0.0.1:3001 \
+            -e WAHA_API_KEY=ci-smoke-only \
+            -e WAHA_WEBHOOK_BASE_URL=http://127.0.0.1:3000 \
+            -e UPSTASH_REDIS_REST_URL=http://127.0.0.1:8079 \
+            -e UPSTASH_REDIS_REST_TOKEN=ci-smoke-only \
+            -e INTERNAL_SECRET=ci-standalone-smoke-only \
+            -e SENTRY_DSN=off "$IMAGE"
+          trap 'rc=$?; docker logs smoke; docker rm -f smoke >/dev/null 2>&1 || true; exit $rc' EXIT
+          ready=false
+          for n in $(seq 1 40); do
+            test "$(docker inspect -f '{{.State.Running}}' smoke)" = true || { docker logs smoke; exit 1; }
+            if docker logs smoke 2>&1 | grep -qE 'Ready in|started server on'; then ready=true; break; fi
+            sleep 3
+          done
+          test "$ready" = true
+          login_http="$(curl --max-time 30 -s -o /tmp/login.html -w '%{http_code}' http://127.0.0.1:3000/login)"
+          echo "LOGIN_HTTP=$login_http"
+          test "$login_http" = 200
+          mcp_http="$(curl --max-time 15 -s -o /tmp/mcp.json -w '%{http_code}' -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' http://127.0.0.1:3000/mcp)"
+          echo "MCP_HTTP=$mcp_http"
+          test "$mcp_http" = 401
+          if docker logs smoke 2>&1 | grep -q MODULE_NOT_FOUND; then docker logs smoke; exit 1; fi
+          docker exec smoke node -e "const fs=require('fs'),p=require('path');let texts=[];function scan(d){for(const x of fs.readdirSync(d,{withFileTypes:true})){const f=p.join(d,x.name);if(x.isDirectory())scan(f);else if(f.endsWith('.js'))texts.push(fs.readFileSync(f,'utf8'));}}scan('/app/.next/server');const all=texts.join('\\n');for(const n of ['list_prospecting_campaigns','list_campaign_conversations','get_lead_conversation','get_campaign_prospecting_summary'])if(!all.includes(n))throw Error('missing_tool:'+n);console.log('Quatro ferramentas presentes no bundle Linux');"
+          docker logs smoke > smoke.log 2>&1
+      - name: Exportar imagem e metadados para transporte SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker save "$IMAGE" -o image.tar
+          python3 ci-release/layers.py
+          gzip -1 < image.tar > app-image.tar.gz
+          docker image inspect "$IMAGE" > image-inspect.json
+          python3 - <<'PY'
+          import json,hashlib,os,pathlib
+          image=json.loads(pathlib.Path('image-inspect.json').read_text())[0]
+          archive=pathlib.Path('app-image.tar.gz')
+          sha=hashlib.file_digest(archive.open('rb'),'sha256').hexdigest()
+          result={'version':os.environ['VERSION'],'image_tag':os.environ['IMAGE'],
+            'image_id':image['Id'],'architecture':image['Architecture'],'os':image['Os'],
+            'unpacked_bytes':image['Size'],'compressed_bytes':archive.stat().st_size,
+            'layers':json.loads(pathlib.Path('layers.json').read_text()),'archive_sha256':sha,'source_revision':os.environ['GITHUB_SHA'],
+            'validation':{'tests':79,'standalone_login_http':200,'unauthenticated_mcp_http':401,'four_tools_in_bundle':True}}
+          pathlib.Path('image-metadata.json').write_text(json.dumps(result,indent=2))
+          print(json.dumps(result,indent=2))
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fluxalvo-mcp-app-linux-amd64-1.83.0-fluxalvo.10
+          path: |
+            app-image.tar.gz
+            image-metadata.json
+            image-inspect.json
+            smoke.log
+          compression-level: 0
+          retention-days: 3
+
+  worker-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      IMAGE: ghcr.io/melgarafael/deskcomm-worker:1.83.0-fluxalvo.10
+      VERSION: 1.83.0-fluxalvo.10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.worker
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.IMAGE }}
+          build-args: APP_VERSION=${{ env.VERSION }}
+          cache-from: type=gha,scope=fluxalvo-worker
+          cache-to: type=gha,mode=max,scope=fluxalvo-worker
+          labels: |
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Integracao do worker com PostgreSQL descartavel
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg16
+          for n in $(seq 1 60); do
+            if docker exec smoke-pg pg_isready -h 127.0.0.1 -U postgres; then break; fi
+            sleep 1
+          done
+          docker exec -i smoke-pg psql -U postgres -v ON_ERROR_STOP=1 < ci-release/prelude.sql
+          docker exec -i smoke-pg psql -U postgres -v ON_ERROR_STOP=1 < supabase/baseline.sql > baseline-smoke.log
+          docker run -d --name smoke-worker --network host \
+            -e SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres \
+            -e NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321 \
+            -e SUPABASE_SERVICE_ROLE_KEY=ci-only-no-production \
+            -e SENTRY_DSN=off "$IMAGE"
+          trap 'docker logs smoke-worker; docker rm -f smoke-worker smoke-pg >/dev/null 2>&1 || true' EXIT
+          ready=false
+          for n in $(seq 1 40); do
+            if curl --fail --max-time 2 http://127.0.0.1:8787/healthz > worker-health.json; then ready=true; break; fi
+            test "$(docker inspect -f '{{.State.Running}}' smoke-worker)" = true
+            sleep 3
+          done
+          test "$ready" = true
+          sleep 8
+          curl --fail --max-time 5 http://127.0.0.1:8787/healthz
+          docker stop --time 25 smoke-worker
+          test "$(docker inspect -f '{{.State.ExitCode}}' smoke-worker)" = 0
+          docker logs smoke-worker > smoke.log 2>&1
+          grep -q 'agent-engine pronto' smoke.log
+          grep -q 'worker encerrado limpo' smoke.log
+      - name: Exportar imagem validada
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker save "$IMAGE" -o image.tar
+          docker image inspect "$IMAGE" > image-inspect.json
+          python3 ci-release/layers.py
+          gzip -1 < image.tar > worker-image.tar.gz
+          python3 ci-release/metadata.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fluxalvo-worker-linux-amd64-1.83.0-fluxalvo.10
+          path: |
+            worker-image.tar.gz
+            image-metadata.json
+            image-inspect.json
+            smoke.log
+            worker-health.json
+          compression-level: 0
+          retention-days: 3

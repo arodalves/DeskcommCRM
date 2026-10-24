@@ -1,3 +1,5 @@
+import { readServiceBoundarySupabase } from "@/lib/atendimento/origem";
+import { eventoDeProspeccaoElegivel } from "@/lib/prospecting/evento-elegivel";
 /**
  * Gatilho PROSPECÇÃO ACEITE INICIAL (`trigger_config.kind='prospecting_initial_accepted'`).
  *
@@ -12,9 +14,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { EventRow } from "@/lib/event-log/dispatcher";
 import { triggerConfigSchema } from "./api-schemas";
 import { enrollFollowupFlow } from "./enroll";
-import { adicionarDiasUteis } from "@/lib/prospecting/business-days";
+
 import { checarExclusaoDeProspeccao } from "@/lib/prospecting/exclusions";
-import { ehRespostaAutomatica } from "@/lib/prospecting/resposta-automatica";
+import { sinaisComerciais } from "@/lib/prospecting/sinais-comerciais";
 
 export const EVENTO_PROSPECCAO_ACEITE_INICIAL = "prospecting.initial_outbound_accepted";
 export const EVENTO_PROSPECCAO_CONVERSA_INTERROMPIDA = "prospecting.conversation_interrupted";
@@ -96,14 +98,6 @@ export async function carregarPointersDeProspeccao(
         name: row.name,
         campaign_ids: parsed.data.params?.campaign_ids,
       });
-    } else if (row.name === "Prospecção comercial — sem resposta") {
-      // Reconhecimento nominal para o fluxo oficial de prospecção comercial
-      pointers.push({
-        id: row.id,
-        organization_id: row.organization_id,
-        active_version_id: row.active_version_id,
-        name: row.name,
-      });
     }
   }
 
@@ -140,6 +134,9 @@ export async function aplicaGatilhoDeProspeccao(
   }
 
   summary.matched = true;
+  const evidence = await eventoDeProspeccaoElegivel(deps.admin, row.organization_id, payload, false);
+  if (!evidence) { summary.skipped_existing++; return summary; }
+
 
   // 1. Defesa anti-retroativa dinâmica e real baseada no banco:
   // Consulta a campanha real no banco para obter activated_at e activation_version
@@ -175,7 +172,7 @@ export async function aplicaGatilhoDeProspeccao(
   const acceptedAtTime = Date.parse(payload.provider_accepted_at);
 
   if (
-    isNaN(acceptedAtTime) ||
+    isNaN(acceptedAtTime) || acceptedAtTime > now.getTime() || acceptedAtTime !== Date.parse(evidence.acceptedAt) ||
     candidateAttemptTime < campaignActivationTime ||
     acceptedAtTime < campaignActivationTime
   ) {
@@ -202,13 +199,14 @@ export async function aplicaGatilhoDeProspeccao(
   }
 
   // 3. Idempotência por candidato: um candidato só pode ter uma inscrição nesse fluxo
-  const { data: existingEnr } = await deps.admin
+  const { data: existingEnr, error: existingErr } = await deps.admin
     .from("followup_enrollments")
     .select("id")
     .eq("organization_id", row.organization_id)
     .eq("prospecting_candidate_id", payload.candidate_id)
     .maybeSingle();
 
+  if (existingErr) throw new Error(existingErr.message);
   if (existingEnr) {
     summary.skipped_existing++;
     return summary;
@@ -227,27 +225,32 @@ export async function aplicaGatilhoDeProspeccao(
       }
     }
 
-    // Calcular Follow-up 1: exatamente 2 dias úteis após o aceite real da primeira abordagem
-    const dataAceite = new Date(payload.provider_accepted_at);
-    const dataFollowup1 = adicionarDiasUteis(dataAceite, 2);
-
+    // O próprio grafo publicado calcula a espera a partir do aceite registrado.
     const enrollRes = await enrollFollowupFlow(deps.admin, {
       organizationId: row.organization_id,
       pointerId: pointer.id,
       contactId: payload.contact_id,
       actorUserId: null,
+      agentId: evidence.agentId,
       requestId: row.id,
+      resolveServiceBoundary: async () => {
+        const boundary = await readServiceBoundarySupabase(deps.admin, row.organization_id, payload.conversation_id);
+        if (!boundary || boundary.status !== "open") throw new Error("service_scope_mismatch");
+        return boundary;
+      },
       prospectingCandidateId: payload.candidate_id,
       prospectingCampaignId: payload.campaign_id,
       prospectingAcceptedAt: payload.provider_accepted_at,
       prospectingActivationVersion: campaignActivationVersion,
-      nextEvalAt: dataFollowup1.toISOString(),
+
     });
 
     if (enrollRes.ok) {
       summary.enrolled++;
     } else if (enrollRes.code === "conflict") {
       summary.skipped_existing++;
+    } else if (enrollRes.code === "internal_error") {
+      throw new Error(enrollRes.message);
     }
   }
 
@@ -287,13 +290,6 @@ export async function carregarPointersDeProspeccaoConversaInterrompida(
         name: row.name,
         campaign_ids: parsed.data.params?.campaign_ids,
       });
-    } else if (row.name === "Prospecção comercial — conversa interrompida") {
-      pointers.push({
-        id: row.id,
-        organization_id: row.organization_id,
-        active_version_id: row.active_version_id,
-        name: row.name,
-      });
     }
   }
 
@@ -330,6 +326,9 @@ export async function aplicaGatilhoConversaInterrompida(
   }
 
   summary.matched = true;
+  const evidence = await eventoDeProspeccaoElegivel(deps.admin, row.organization_id, payload, true);
+  if (!evidence) { summary.skipped_existing++; return summary; }
+
 
   // 1. Defesa anti-retroativa dinâmica e real baseada no banco
   const { data: campaign, error: campErr } = await deps.admin
@@ -357,7 +356,7 @@ export async function aplicaGatilhoConversaInterrompida(
   }
 
   const sentAtTime = Date.parse(payload.sent_at);
-  if (isNaN(sentAtTime) || sentAtTime < campaignActivationTime) {
+  if (isNaN(sentAtTime) || sentAtTime > now.getTime() || sentAtTime !== Date.parse(evidence.sentAt) || sentAtTime < campaignActivationTime) {
     summary.skipped_retroactive++;
     return summary;
   }
@@ -407,15 +406,17 @@ export async function aplicaGatilhoConversaInterrompida(
     .eq("conversation_id", payload.conversation_id)
     .eq("direction", "inbound")
     .gt("created_at", candidate.provider_accepted_at)
-    .limit(10);
+    .order("created_at", { ascending: false })
+    .limit(100);
 
   if (!priorInbounds || priorInbounds.length === 0) {
     summary.skipped_existing++;
     return summary;
   }
 
+  if (priorInbounds.some((msg) => sinaisComerciais(msg.body).recusa)) return summary;
   const temRespostaHumana = priorInbounds.some(
-    (msg) => !ehRespostaAutomatica(msg.body as string | null | undefined),
+    (msg) => sinaisComerciais(msg.body).interesse,
   );
   if (!temRespostaHumana) {
     summary.skipped_existing++;
@@ -504,42 +505,49 @@ export async function aplicaGatilhoConversaInterrompida(
     }
 
     // Idempotência: verificar se já existe inscrição ativa neste pointer para este contato
-    const { data: existingActive } = await deps.admin
+    const { data: existingActive, error: existingError } = await deps.admin
       .from("followup_enrollments")
       .select("id, prospecting_outbound_message_id")
       .eq("organization_id", row.organization_id)
       .eq("pointer_id", pointer.id)
       .eq("contact_id", payload.contact_id)
-      .in("status", ["active", "waiting_reply", "paused_handoff"])
+      .eq("prospecting_outbound_message_id", payload.message_id)
       .maybeSingle();
 
+    if (existingError) throw new Error(existingError.message);
     if (existingActive) {
       summary.skipped_existing++;
       continue;
     }
 
-    // Calcular Follow-up 1: exatamente 2 dias úteis após a mensagem do Xavier
-    const dataFollowup1 = adicionarDiasUteis(new Date(payload.sent_at), 2);
-
+    // Preserva o prazo do grafo a partir do outbound aceito.
     const enrollRes = await enrollFollowupFlow(deps.admin, {
       organizationId: row.organization_id,
       pointerId: pointer.id,
       contactId: payload.contact_id,
       actorUserId: null,
+      agentId: evidence.agentId,
       requestId: row.id,
+      resolveServiceBoundary: async () => {
+        const boundary = await readServiceBoundarySupabase(deps.admin, row.organization_id, payload.conversation_id);
+        if (!boundary || boundary.status !== "open") throw new Error("service_scope_mismatch");
+        return boundary;
+      },
       prospectingCandidateId: payload.candidate_id,
       prospectingCampaignId: payload.campaign_id,
       prospectingAcceptedAt: candidate.provider_accepted_at,
       prospectingActivationVersion: campaignActivationVersion,
       prospectingLastOutboundAt: payload.sent_at,
       prospectingOutboundMessageId: payload.message_id,
-      nextEvalAt: dataFollowup1.toISOString(),
+
     });
 
     if (enrollRes.ok) {
       summary.enrolled++;
     } else if (enrollRes.code === "conflict") {
       summary.skipped_existing++;
+    } else if (enrollRes.code === "internal_error") {
+      throw new Error(enrollRes.message);
     }
   }
 
@@ -595,24 +603,38 @@ export async function verificarEEmitirConversaInterrompida(
   if (inboundsRes.rows.length === 0) return false;
 
   const temRespostaHumana = inboundsRes.rows.some(
-    (row) => !ehRespostaAutomatica(row.body as string | null | undefined),
+    (row) => sinaisComerciais(typeof row.body === "string" ? row.body : null).interesse,
   );
   if (!temRespostaHumana) return false;
 
-  // 3. Emitir evento durável de conversa interrompida
-  const nowIso = new Date().toISOString();
+  if (inboundsRes.rows.some((r) => sinaisComerciais(typeof r.body === "string" ? r.body : null).recusa)) return false;
+  // A saída que originou a espera precisa ter sido aceita e pertencer ao agente da campanha.
+  const accepted = await db.query(
+    `select m.sent_at from public.messages m
+     join public.conversations v on v.organization_id=m.organization_id and v.id=m.conversation_id
+     join public.prospecting_campaigns c on c.organization_id=m.organization_id and c.id=$4::uuid
+     where m.organization_id=$1 and m.conversation_id=$2 and m.id=$3
+       and m.direction='outbound' and m.status in ('sent','delivered','read')
+       and m.external_id is not null and m.sent_at is not null and m.sent_via='ai'
+       and v.active_ai_agent_id::text=c.config->>'agent_id'
+       and v.active_ai_agent_id::text=$5
+       and v.channel_session_id::text=c.config->>'channel_session_id'
+       and v.assigned_to_user_id is null and v.status='open'`,
+    [tenantId, conversationId, lastMessageId, cand.campaign_id, input.agentId ?? null],
+  );
+  if (!accepted.rows[0]?.sent_at) return false;
+  const nowIso = new Date(String(accepted.rows[0].sent_at)).toISOString();
   await db.query(
     `SELECT public.emit_event(
        'prospecting.conversation_interrupted',
        'prospecting_candidate',
-       $3::uuid,
-       $4::jsonb,
+       $2::uuid,
+       $3::jsonb,
        '{"source": "agent_inbound_turn"}'::jsonb,
        $1::uuid
      )`,
     [
       tenantId,
-      conversationId,
       cand.id,
       JSON.stringify({
         candidate_id: cand.id,

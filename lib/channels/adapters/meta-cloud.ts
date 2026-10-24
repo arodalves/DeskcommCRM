@@ -1,3 +1,4 @@
+import { saudacaoNoEnvio } from "@/lib/prospecting/saudacao-no-envio";
 /**
  * Adapter da WhatsApp Cloud API — o transporte do canal oficial.
  *
@@ -341,6 +342,9 @@ export const metaCloudAdapter: ChannelAdapter = {
       { type: "text", text: { body: envelope.body ?? "" } };
 
     await envelope.beforeSend?.();
+    if (envelope.prospectingGreeting && corpo.type === "text" && "text" in corpo) {
+      corpo.text = { body: saudacaoNoEnvio(envelope.body ?? "", new Date()) };
+    }
     const res = await fetch(
       `${graphBaseUrl()}/${creds.phoneNumberId}/messages`,
       {

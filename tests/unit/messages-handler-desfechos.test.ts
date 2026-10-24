@@ -595,3 +595,15 @@ describe('sendMessageHandler — token de servidor (api_token) no ponto de uso',
     ).toBe('system');
   });
 });
+
+
+it("confirmação tardia do envio WAHA não rebaixa ACK de entrega já observado", async () => {
+  wahaConfigured(true);
+  const {supabase,mensagens}=criarDubleDoHandler({conversation:conversationRow()});
+  vi.stubGlobal("fetch",vi.fn(async()=>{
+    Object.assign(mensagens[0]!,{status:"delivered",ack:2,delivered_at:"2026-10-23T12:00:00Z"});
+    return new Response(JSON.stringify({id:{id:"ACKRACE"}}),{status:200});
+  }));
+  const message=await sendMessageHandler(supabase,ctx,textInput());
+  expect(message).toMatchObject({status:"delivered",ack:2,external_id:"ACKRACE",delivered_at:"2026-10-23T12:00:00Z"});
+});
